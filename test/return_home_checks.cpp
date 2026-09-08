@@ -45,6 +45,9 @@ struct ReturnHomeTestAccess {
       previous = node;
     }
   }
+  static void insert(DEP& planner, const std::shared_ptr<PRM::Node>& node) {
+    planner.prmNodeVec_.insert(node);
+  }
 };
 }
 
@@ -99,6 +102,33 @@ int main(int argc, char** argv) {
     require(!planner.reachableGainExhausted(0,checked), "information outside selected goals prevents completion");
     globalPlanner::ReturnHomeTestAccess::graph(planner,map,start,{});
     require(!planner.reachableGainExhausted(0,checked), "empty roadmap is not completion");
+
+    // The closest roadmap node is isolated, while a second safe current-pose
+    // connector reaches the requested goal. The old single-nearest start fails.
+    map = std::make_shared<TestMap>();
+    globalPlanner::ReturnHomeTestAccess::graph(planner,map,Vector3d(0,0,1),{});
+    auto isolated = std::make_shared<PRM::Node>(Vector3d(0.1,0,1));
+    auto connector = std::make_shared<PRM::Node>(Vector3d(0.3,0.2,1));
+    auto requested = std::make_shared<PRM::Node>(Vector3d(0.8,0.2,1));
+    connector->adjNodes.insert(requested); requested->adjNodes.insert(connector);
+    globalPlanner::ReturnHomeTestAccess::insert(planner,isolated);
+    globalPlanner::ReturnHomeTestAccess::insert(planner,connector);
+    globalPlanner::ReturnHomeTestAccess::insert(planner,requested);
+    std::vector<std::vector<std::shared_ptr<PRM::Node>>> candidates;
+    require(planner.findCandidatePath({requested},candidates) && !candidates.empty(),
+            "multiple safe current-pose connectors avoid nearest-node stranding");
+
+    // All globally selected goals are disconnected. A reachable component must
+    // still produce recovery candidates instead of remaining blocked forever.
+    globalPlanner::ReturnHomeTestAccess::graph(planner,map,Vector3d(-2.3,0,1),
+                                               {{-2,0,1},{-1.5,0,1}});
+    auto unreachable = std::make_shared<PRM::Node>(Vector3d(2,0,1));
+    globalPlanner::ReturnHomeTestAccess::insert(planner,unreachable);
+    map->unknown(Vector3d(-1.45,0.25,1.05));
+    candidates.clear();
+    require(planner.findCandidatePath({unreachable},candidates) && !candidates.empty() &&
+            candidates.front().back() != unreachable,
+            "unreachable global goals fall back to the reachable component");
     std::cout << "ALL RETURN-HOME CHECKS PASSED" << std::endl;
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << std::endl; return 1;
