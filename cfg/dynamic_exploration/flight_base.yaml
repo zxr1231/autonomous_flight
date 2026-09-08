@@ -5,6 +5,14 @@ desired_acceleration: 1.0 # m/s^2
 desired_angular_velocity: 0.5 # rad/s
 waypoint_stablize_time: 0.0
 initial_scan: false
+record_rosbag: false # set true only when an exploration dataset is needed
+return_home_on_complete: true
+# Completion means fresh gain exhausted on the reachable sampled roadmap in DEP/global_region.
+# A planning failure is NOT completion. Keep threshold zero for normal use.
+completion_gain_threshold: 0
+completion_confirmations: 3
+completion_confirm_duration: 5.0 # simulation seconds with fresh depth between checks
+return_home_tolerance: 0.2 # m; return at takeoff altitude and hover, do not land
 replan_time_for_dynamic_obstacles: 0.3
 free_range: [1, 1, 1]
 reach_goal_distance: 0.1

@@ -179,6 +179,11 @@ target_link_libraries(dynamic_navigation_node ${catkin_LIBRARIES} ${PROJECT_NAME
 target_link_libraries(dynamic_inspection_node ${catkin_LIBRARIES} ${PROJECT_NAME})
 target_link_libraries(dynamic_exploration_node ${catkin_LIBRARIES} ${PROJECT_NAME})
 
+if(CATKIN_ENABLE_TESTING)
+  add_executable(return_home_checks test/return_home_checks.cpp)
+  target_link_libraries(return_home_checks ${catkin_LIBRARIES} ${PROJECT_NAME})
+endif()
+
 #############
 ## Install ##
 #############

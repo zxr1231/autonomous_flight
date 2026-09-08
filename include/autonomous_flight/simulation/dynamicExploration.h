@@ -12,6 +12,11 @@
 #include <trajectory_planner/bsplineTraj.h>
 #include <map_manager/dynamicMap.h>
 #include <onboard_detector/fakeDetector.h>
+#include <autonomous_flight/simulation/completionGate.h>
+#include <std_msgs/String.h>
+#include <sensor_msgs/Image.h>
+#include <atomic>
+#include <mutex>
 
 
 namespace AutoFlight{
@@ -48,7 +53,27 @@ namespace AutoFlight{
 		double reachGoalDistance_;
 
 		// exploration data
-		bool explorationReplan_ = true;
+		std::atomic<bool> explorationReplan_{true};
+		std::atomic<bool> returningHome_{false};
+		bool homeReached_ = false;
+		bool settlingHome_ = false;
+		bool handlingWaypoints_ = false;
+		bool returnHomeEnabled_ = true;
+		int completionGainThreshold_ = 0;
+		double homeTolerance_ = 0.2;
+		double homeHoldTime_ = 2.0;
+		double homeStillSince_ = -1.0;
+		geometry_msgs::PoseStamped homePose_;
+		CompletionGate completionGate_;
+		ros::Publisher missionStatePub_, homePub_, returnPathPub_;
+		ros::Subscriber completionDepthSub_;
+		std::atomic<double> lastDepthTime_{-1.0};
+		std::atomic<uint64_t> depthSequence_{0};
+		std::mutex resultMutex_;
+		bool resultReady_ = false;
+		nav_msgs::Path resultPath_;
+		std::string resultState_;
+		std::string missionState_;
 		bool replan_ = false;
 		bool newWaypoints_ = false;
 		int waypointIdx_ = 1;
@@ -86,6 +111,8 @@ namespace AutoFlight{
 		bool hasCollision();
 		bool hasDynamicCollision();
 		void exploreReplan();
+		void setMissionState(const std::string& state);
+		void completionDepthCB(const sensor_msgs::ImageConstPtr& image);
 		double computeExecutionDistance();
 		bool replanForDynamicObstacle();
 		bool reachExplorationGoal();

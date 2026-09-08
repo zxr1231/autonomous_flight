@@ -18,6 +18,15 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::initParam(){
+		this->nh_.param("autonomous_flight/return_home_on_complete", this->returnHomeEnabled_, true);
+		this->nh_.param("autonomous_flight/completion_gain_threshold", this->completionGainThreshold_, 0);
+		this->completionGainThreshold_ = std::max(0, this->completionGainThreshold_);
+		this->nh_.param("autonomous_flight/return_home_tolerance", this->homeTolerance_, 0.2);
+		this->homeTolerance_ = std::max(0.05, this->homeTolerance_);
+		int confirmations; double duration;
+		this->nh_.param("autonomous_flight/completion_confirmations", confirmations, 3);
+		this->nh_.param("autonomous_flight/completion_confirm_duration", duration, 5.0);
+		this->completionGate_ = CompletionGate(confirmations, duration);
     	// use simulation detector	
 		if (not this->nh_.getParam("autonomous_flight/use_fake_detector", this->useFakeDetector_)){
 			this->useFakeDetector_ = false;
@@ -158,6 +167,12 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::registerPub(){
+		this->missionStatePub_ = this->nh_.advertise<std_msgs::String>("dynamicExploration/mission_state", 1, true);
+		this->homePub_ = this->nh_.advertise<geometry_msgs::PoseStamped>("dynamicExploration/home", 1, true);
+		this->returnPathPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/return_path", 1, true);
+		std::string depthTopic;
+		this->nh_.param<std::string>("dynamic_map/depth_image_topic", depthTopic, "/camera/depth/image_raw");
+		this->completionDepthSub_ = this->nh_.subscribe(depthTopic, 1, &dynamicExploration::completionDepthCB, this);
 		this->polyTrajPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/poly_traj", 1000);
 		this->pwlTrajPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/pwl_trajectory", 1000);
 		this->bsplineTrajPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/bspline_trajectory", 1000);
@@ -181,6 +196,7 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::plannerCB(const ros::TimerEvent&){
+		if (this->homeReached_ || this->handlingWaypoints_) return;
 		// cout << "in planner callback" << endl;
 
 		if (this->replan_){
@@ -313,6 +329,7 @@ namespace AutoFlight{
 						this->stop();
 						cout << "[AutoFlight]: Stop!!! Trajectory generation fails." << endl;
 						this->replan_ = false;
+						if (this->returningHome_) this->explorationReplan_ = true;
 					}
 					else if (this->hasDynamicCollision()){
 						this->trajectoryReady_ = false;
@@ -327,8 +344,9 @@ namespace AutoFlight{
 						}
 						else{
 							cout << "[AutoFlight]: Unable to generate a feasible trajectory." << endl;
-							cout << "\033[1;32m[AutoFlight]: Wait for new path. Press ENTER to Replan.\033[0m" << endl;
+							cout << "\033[1;32m[AutoFlight]: Wait for a new exploration path.\033[0m" << endl;
 							this->replan_ = false;
+							this->explorationReplan_ = true;
 						}
 					}
 				}
@@ -337,6 +355,7 @@ namespace AutoFlight{
 				this->trajectoryReady_ = false;
 				this->stop();
 				this->replan_ = false;
+				this->explorationReplan_ = true;
 				cout << "[AutoFlight]: Goal is not valid. Stop." << endl;
 			}
 
@@ -345,6 +364,56 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::replanCheckCB(const ros::TimerEvent&){
+		if (this->handlingWaypoints_) return; // moveToOrientation spins callbacks recursively.
+		struct Guard { bool& busy; Guard(bool& b): busy(b) {busy=true;} ~Guard(){busy=false;} } guard(this->handlingWaypoints_);
+		if (this->homeReached_) return;
+		{
+			std::lock_guard<std::mutex> lock(this->resultMutex_);
+			if (this->resultReady_) {
+				this->resultReady_ = false;
+				this->replan_ = false;
+				this->trajectoryReady_ = false;
+				this->newWaypoints_ = false;
+				this->stop();
+				this->setMissionState(this->resultState_);
+				if (this->resultPath_.poses.size() >= 2) {
+					this->waypoints_ = this->resultPath_;
+					this->waypointIdx_ = 1;
+					this->newWaypoints_ = true;
+				} else {
+					this->waypoints_.poses.clear();
+					this->explorationReplan_ = true;
+				}
+			}
+		}
+		if (this->returningHome_) {
+			const double distance = AutoFlight::getPoseDistance(this->odom_.pose.pose, this->homePose_.pose);
+			const auto& v = this->odom_.twist.twist.linear;
+			const double speed = std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+			if (distance <= this->homeTolerance_) {
+				this->settlingHome_ = true;
+				this->trajectoryReady_ = false;
+				this->replan_ = false;
+				this->newWaypoints_ = false;
+				this->explorationReplan_ = false;
+				this->updateTarget(this->homePose_);
+				const double now = ros::Time::now().toSec();
+				if (speed < 0.15) {
+					if (this->homeStillSince_ < 0) this->homeStillSince_ = now;
+					if (now - this->homeStillSince_ >= this->homeHoldTime_) {
+						this->homeReached_ = true;
+						this->setMissionState("HOME_REACHED");
+						ROS_INFO("[ReturnHome] Arrived at takeoff location; hovering, no landing.");
+					}
+				} else this->homeStillSince_ = -1;
+				return;
+			}
+			if (this->settlingHome_) {
+				this->settlingHome_ = false;
+				this->homeStillSince_ = -1;
+				this->explorationReplan_ = true;
+			}
+		}
 		/*
 			Replan if
 			1. collision detected
@@ -353,6 +422,14 @@ namespace AutoFlight{
 		*/
 
 		if (this->newWaypoints_){
+			if (this->waypoints_.poses.size() < 2){
+				this->newWaypoints_ = false;
+				this->replan_ = false;
+				this->trajectoryReady_ = false;
+				this->explorationReplan_ = true;
+				cout << "[AutoFlight]: Exploration path has fewer than two waypoints. Requesting a new path." << endl;
+				return;
+			}
 			this->replan_ = false;
 			this->trajectoryReady_ = false;
 			double yaw = atan2(this->waypoints_.poses[1].pose.position.y - this->odom_.pose.pose.position.y, this->waypoints_.poses[1].pose.position.x - this->odom_.pose.pose.position.x);
@@ -405,9 +482,9 @@ namespace AutoFlight{
 				this->goal_ = this->waypoints_.poses[this->waypointIdx_];
 			}
 			if (this->waypointIdx_ + 1 > int(this->waypoints_.poses.size())){
-				cout << "\033[1;32m[AutoFlight]: Finishing entire path. Wait for new path. Press ENTER to Replan.\033[0m" << endl;
+				cout << "\033[1;32m[AutoFlight]: Finishing entire path. Requesting a new exploration path.\033[0m" << endl;
 				this->replan_ = false;
-				// this->explorationReplan_ = true;
+				this->explorationReplan_ = true;
 			}
 			else{
 				cout << "[AutoFlight]: Start planning for next waypoint." << endl;
@@ -419,9 +496,10 @@ namespace AutoFlight{
 			return;		
 		}
 		else if (this->waypoints_.poses.size() != 0 and this->isReach(this->goal_, this->reachGoalDistance_, true) and (this->replan_ or this->trajectoryReady_)){
-			cout << "\033[[AutoFlight]: Finishing entire path. Wait for new path. Press ENTER to Replan.\033[0m" << endl;
+			cout << "\033[[AutoFlight]: Finishing entire path. Requesting a new exploration path.\033[0m" << endl;
 			this->replan_ = false;
 			this->trajectoryReady_ = false;
+			this->explorationReplan_ = true;
 			return;		
 		}
 
@@ -429,8 +507,8 @@ namespace AutoFlight{
 			if (not this->isGoalValid() and (this->replan_ or this->trajectoryReady_)){
 				this->replan_ = false;
 				this->trajectoryReady_ = false;
-				cout << "\033[1;32m[AutoFlight]: Current goal is invalid. Need new path. Press ENTER to Replan.\033[0m" << endl;
-				// this->explorationReplan_ = true;
+				cout << "\033[1;32m[AutoFlight]: Current goal is invalid. Requesting a new exploration path.\033[0m" << endl;
+				this->explorationReplan_ = true;
 				return;
 			}
 		}
@@ -452,7 +530,8 @@ namespace AutoFlight{
 				this->trajectoryReady_ = false;
 				this->replan_ = false;
 				this->stop();
-				cout << "\033[1;32m[AutoFlight]: the goal of current local trajectory is not safe. Press ENTER to Replan.\033[0m" << endl;
+				cout << "\033[1;32m[AutoFlight]: The current local goal is unsafe. Requesting a new exploration path.\033[0m" << endl;
+				this->explorationReplan_ = true;
 				return;
 			}
 
@@ -562,18 +641,32 @@ namespace AutoFlight{
 		std::cin.clear();
 		fflush(stdin);
 		std::cin.get();
+		// Keep actual takeoff XY and yaw, at the configured flight altitude.
+		this->homePose_.header.frame_id = "map";
+		this->homePose_.header.stamp = ros::Time::now();
+		this->homePose_.pose = this->odom_.pose.pose;
+		this->homePose_.pose.position.z = this->takeoffHgt_;
 		this->takeoff();
+		this->homePub_.publish(this->homePose_);
+		this->setMissionState("EXPLORING");
 
 		cout << "\033[1;32m[AutoFlight]: Takeoff succeed. Then PRESS ENTER to continue or PRESS CTRL+C to land.\033[0m" << endl;
 		std::cin.clear();
 		fflush(stdin);
 		std::cin.get();
 
-		int temp1 = system("mkdir ~/rosbag_exploration_info &");
-		int temp2 = system("mv ~/rosbag_exploration_info/exploration_info.bag ~/rosbag_exploration_info/previous.bag &");
-		int temp3 = system("rosbag record -O ~/rosbag_exploration_info/exploration_info.bag /camera/aligned_depth_to_color/image_raw_t /camera/color/image_raw_t /dynamic_map/inflated_voxel_map_t /onboard_detector/dynamic_bboxes /mavros/local_position/pose /dynamicExploration/bspline_trajectory /mavros/setpoint_position/local /tracking_controller/target_pose /dep/best_paths /dep/roadmap /dep/candidate_paths /dep/best_paths /dep/frontier_regions /dynamic_map/2D_occupancy_map __name:=exploration_bag_info &");
-		if (temp1==-1 or temp2==-1 or temp3==-1){
-			cout << "[AutoFlight]: Recording fails." << endl;
+		bool recordRosbag = false;
+		this->nh_.param("autonomous_flight/record_rosbag", recordRosbag, false);
+		if (recordRosbag){
+			int temp1 = system("mkdir -p ~/rosbag_exploration_info");
+			int temp2 = system("mv ~/rosbag_exploration_info/exploration_info.bag ~/rosbag_exploration_info/previous.bag 2>/dev/null");
+			int temp3 = system("rosbag record -O ~/rosbag_exploration_info/exploration_info.bag /camera/aligned_depth_to_color/image_raw_t /camera/color/image_raw_t /dynamic_map/inflated_voxel_map_t /onboard_detector/dynamic_bboxes /mavros/local_position/pose /dynamicExploration/bspline_trajectory /mavros/setpoint_position/local /tracking_controller/target_pose /dep/best_paths /dep/roadmap /dep/candidate_paths /dep/best_paths /dep/frontier_regions /dynamic_map/2D_occupancy_map __name:=exploration_bag_info &");
+			if (temp1==-1 or temp2==-1 or temp3==-1){
+				cout << "[AutoFlight]: Recording fails." << endl;
+			}
+		}
+		else{
+			cout << "[AutoFlight]: Exploration rosbag recording is disabled." << endl;
 		}
 
 		this->initExplore();
@@ -720,21 +813,81 @@ namespace AutoFlight{
 		// 	cout << "[AutoFlight]: End initial scan." << endl; 
 		// }
 		while (ros::ok()){
-			this->expPlanner_->setMap(this->map_);
-			ros::Time startTime = ros::Time::now();
-			bool replanSuccess = this->expPlanner_->makePlan();
-			if (replanSuccess){
-				this->waypoints_ = this->expPlanner_->getBestPath();
-				this->newWaypoints_ = true;
-				this->waypointIdx_ = 1;
+			if (not this->explorationReplan_.exchange(false)){
+				ros::WallDuration(0.05).sleep();
+				continue;
 			}
-			ros::Time endTime = ros::Time::now();
-			std::cin.clear();
-			fflush(stdin);
-			std::cin.get();		
-			cout << "[AutoFlight]: DEP planning time: " << (endTime - startTime).toSec() << "s." << endl;
-
+			bool pending;
+			{
+				std::lock_guard<std::mutex> lock(this->resultMutex_);
+				pending = this->resultReady_;
+			}
+			if (pending) { this->explorationReplan_ = true; ros::WallDuration(0.05).sleep(); continue; }
+			nav_msgs::Path plannedWaypoints;
+			std::string state;
+			const double now = ros::Time::now().toSec();
+			const double depthTime = this->lastDepthTime_.load();
+			const bool sensorFresh = depthTime >= 0 && now >= depthTime && now - depthTime < 2.0;
+			const ros::WallTime startTime = ros::WallTime::now();
+			if (!sensorFresh) {
+				this->completionGate_.reset();
+				state = this->returningHome_ ? "RETURN_BLOCKED_SENSOR" : "EXPLORATION_BLOCKED_SENSOR";
+			} else if (this->returningHome_) {
+				const auto& p = this->homePose_.pose.position;
+				bool success = this->expPlanner_->planReturnPath(Eigen::Vector3d(p.x,p.y,p.z), plannedWaypoints);
+				state = success ? "RETURNING_HOME" : "RETURN_BLOCKED";
+				if (success) {
+					plannedWaypoints.poses.back().pose.orientation = this->homePose_.pose.orientation;
+					this->returnPathPub_.publish(plannedWaypoints);
+				}
+			} else {
+				const bool success = this->expPlanner_->makePlan();
+				int checkedNodes = 0;
+				// A failed path search is never completion by itself. If no path was
+				// produced, a fresh scan of every currently reachable roadmap node may
+				// still provide valid exhaustion evidence.
+				const bool shouldAssess = this->returnHomeEnabled_ &&
+					(!success || (this->expPlanner_->getBestPathGain() >= 0 &&
+					 this->expPlanner_->getBestPathGain() <= this->completionGainThreshold_));
+				const bool exhausted = shouldAssess &&
+					this->expPlanner_->reachableGainExhausted(this->completionGainThreshold_, checkedNodes);
+				const bool assessmentValid = success || (shouldAssess && checkedNodes > 0);
+				const bool complete = this->completionGate_.observe(assessmentValid, exhausted, sensorFresh,
+					this->depthSequence_.load(), now);
+				if (complete) {
+					this->returningHome_ = true;
+					state = "RETURNING_HOME";
+					ROS_INFO("[ReturnHome] Reachable roadmap gain exhausted (%d nodes checked). Returning home; this is not a ground-truth coverage certificate.", checkedNodes);
+				} else if (exhausted) {
+					state = "CONFIRMING_COMPLETE";
+				} else if (success) {
+					plannedWaypoints = this->expPlanner_->getBestPath();
+					state = "EXPLORING";
+				} else state = "EXPLORATION_BLOCKED";
+			}
+			{
+				std::lock_guard<std::mutex> lock(this->resultMutex_);
+				this->resultPath_ = plannedWaypoints;
+				this->resultState_ = state;
+				this->resultReady_ = true;
+			}
+			ROS_INFO("[AutoFlight] Planning wall time: %.3f s", (ros::WallTime::now()-startTime).toSec());
+			ros::WallDuration(plannedWaypoints.poses.empty() ? 1.0 : 0.1).sleep();
 		}
+	}
+
+	void dynamicExploration::setMissionState(const std::string& state) {
+		if (this->missionState_ == state) return;
+		this->missionState_ = state;
+		std_msgs::String message; message.data = state;
+		this->missionStatePub_.publish(message);
+		ROS_INFO_STREAM("[ReturnHome] Mission state: " << state);
+	}
+
+	void dynamicExploration::completionDepthCB(const sensor_msgs::ImageConstPtr& image) {
+		if (image->data.empty() || !image->width || !image->height) return;
+		this->lastDepthTime_ = image->header.stamp.toSec();
+		++this->depthSequence_;
 	}
 
 	double dynamicExploration::computeExecutionDistance(){
@@ -804,6 +957,7 @@ namespace AutoFlight{
 
 	bool dynamicExploration::isGoalValid(){
 		Eigen::Vector3d pGoal (this->goal_.pose.position.x, this->goal_.pose.position.y, this->goal_.pose.position.z);
+		if (this->returningHome_) return this->map_->isInflatedFree(pGoal);
 		if (this->map_->isInflatedOccupied(pGoal)){
 			return false;
 		}
