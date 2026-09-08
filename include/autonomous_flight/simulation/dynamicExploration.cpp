@@ -329,7 +329,7 @@ namespace AutoFlight{
 						this->stop();
 						cout << "[AutoFlight]: Stop!!! Trajectory generation fails." << endl;
 						this->replan_ = false;
-						if (this->returningHome_) this->explorationReplan_ = true;
+						this->explorationReplan_ = true;
 					}
 					else if (this->hasDynamicCollision()){
 						this->trajectoryReady_ = false;
