@@ -7,9 +7,9 @@ waypoint_stablize_time: 0.0
 initial_scan: false
 record_rosbag: false # set true only when an exploration dataset is needed
 return_home_on_complete: true
-# Completion means fresh gain exhausted on the reachable sampled roadmap in DEP/global_region.
-# A planning failure is NOT completion. Keep threshold zero for normal use.
-completion_gain_threshold: 0
+# Operational near-completion threshold, not a ground-truth coverage percentage.
+# Both selected path gain and every reachable node's best-yaw gain must be <= this value.
+completion_gain_threshold: 500
 completion_confirmations: 3
 completion_confirm_duration: 5.0 # simulation seconds with fresh depth between checks
 return_home_tolerance: 0.2 # m; return at takeoff altitude and hover, do not land

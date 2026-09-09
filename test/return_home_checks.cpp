@@ -100,6 +100,7 @@ int main(int argc, char** argv) {
     // Off the roadmap edge: the informative node must remain reachable.
     map->unknown(Vector3d(2.55,0.55,1.05));
     require(!planner.reachableGainExhausted(0,checked), "information outside selected goals prevents completion");
+    require(planner.reachableGainExhausted(500,checked), "configured low-gain threshold permits near-completion");
     globalPlanner::ReturnHomeTestAccess::graph(planner,map,start,{});
     require(!planner.reachableGainExhausted(0,checked), "empty roadmap is not completion");
 

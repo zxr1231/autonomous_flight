@@ -857,7 +857,7 @@ namespace AutoFlight{
 				if (complete) {
 					this->returningHome_ = true;
 					state = "RETURNING_HOME";
-					ROS_INFO("[ReturnHome] Reachable roadmap gain exhausted (%d nodes checked). Returning home; this is not a ground-truth coverage certificate.", checkedNodes);
+					ROS_INFO("[ReturnHome] Reachable roadmap gain is at or below threshold %d (%d nodes checked). Returning home; this is not a ground-truth coverage certificate.", this->completionGainThreshold_, checkedNodes);
 				} else if (exhausted) {
 					state = "CONFIRMING_COMPLETE";
 				} else if (success) {
