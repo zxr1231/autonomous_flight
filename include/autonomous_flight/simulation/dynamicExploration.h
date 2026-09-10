@@ -65,7 +65,7 @@ namespace AutoFlight{
 		double homeStillSince_ = -1.0;
 		geometry_msgs::PoseStamped homePose_;
 		CompletionGate completionGate_;
-		ros::Publisher missionStatePub_, homePub_, returnPathPub_;
+		ros::Publisher missionStatePub_, homePub_, returnPathPub_, planningEventPub_;
 		ros::Subscriber completionDepthSub_;
 		std::atomic<double> lastDepthTime_{-1.0};
 		std::atomic<uint64_t> depthSequence_{0};
@@ -74,6 +74,7 @@ namespace AutoFlight{
 		nav_msgs::Path resultPath_;
 		std::string resultState_;
 		std::string missionState_;
+		uint64_t localPlanningSequence_ = 0;
 		bool replan_ = false;
 		bool newWaypoints_ = false;
 		int waypointIdx_ = 1;

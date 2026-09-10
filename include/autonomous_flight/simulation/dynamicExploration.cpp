@@ -5,6 +5,9 @@
 */
 
 #include <autonomous_flight/simulation/dynamicExploration.h>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 namespace AutoFlight{
 	dynamicExploration::dynamicExploration(const ros::NodeHandle& nh) : flightBase(nh){
@@ -170,6 +173,7 @@ namespace AutoFlight{
 		this->missionStatePub_ = this->nh_.advertise<std_msgs::String>("dynamicExploration/mission_state", 1, true);
 		this->homePub_ = this->nh_.advertise<geometry_msgs::PoseStamped>("dynamicExploration/home", 1, true);
 		this->returnPathPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/return_path", 1, true);
+		this->planningEventPub_ = this->nh_.advertise<std_msgs::String>("dynamicExploration/planning_event", 100);
 		std::string depthTopic;
 		this->nh_.param<std::string>("dynamic_map/depth_image_topic", depthTopic, "/camera/depth/image_raw");
 		this->completionDepthSub_ = this->nh_.subscribe(depthTopic, 1, &dynamicExploration::completionDepthCB, this);
@@ -200,6 +204,10 @@ namespace AutoFlight{
 		// cout << "in planner callback" << endl;
 
 		if (this->replan_){
+			using Clock = std::chrono::steady_clock;
+			const auto localStart = Clock::now();
+			double inputPathMs = 0.0, updatePathMs = 0.0, bsplineMs = 0.0;
+			bool planSuccess = false;
 			std::vector<Eigen::Vector3d> obstaclesPos, obstaclesVel, obstaclesSize;
 			if (this->useFakeDetector_){
 				this->getDynamicObstacles(obstaclesPos, obstaclesVel, obstaclesSize);
@@ -218,8 +226,10 @@ namespace AutoFlight{
 			pStart.pose = this->odom_.pose.pose;
 			pGoal = this->goal_;
 			simplePath.poses = {pStart, pGoal};
+			const auto inputStart = Clock::now();
 			this->pwlTraj_->updatePath(simplePath, false);
 			this->pwlTraj_->makePlan(inputTraj, this->bsplineTraj_->getControlPointDist());
+			inputPathMs = std::chrono::duration<double, std::milli>(Clock::now()-inputStart).count();
 			// if (not this->trajectoryReady_){
 			// 	// generate new trajectory
 			// 	nav_msgs::Path simplePath;
@@ -298,13 +308,17 @@ namespace AutoFlight{
 			
 
 			this->inputTrajMsg_ = inputTraj;
+			const auto updateStart = Clock::now();
 			bool updateSuccess = this->bsplineTraj_->updatePath(inputTraj, startEndConditions);
+			updatePathMs = std::chrono::duration<double, std::milli>(Clock::now()-updateStart).count();
 			if (obstaclesPos.size() != 0 and updateSuccess){
 				this->bsplineTraj_->updateDynamicObstacles(obstaclesPos, obstaclesVel, obstaclesSize);
 			}
 			if (updateSuccess){
 				nav_msgs::Path bsplineTrajMsgTemp;
-				bool planSuccess = this->bsplineTraj_->makePlan(bsplineTrajMsgTemp);
+				const auto bsplineStart = Clock::now();
+				planSuccess = this->bsplineTraj_->makePlan(bsplineTrajMsgTemp);
+				bsplineMs = std::chrono::duration<double, std::milli>(Clock::now()-bsplineStart).count();
 				if (planSuccess){
 					this->bsplineTrajMsg_ = bsplineTrajMsgTemp;
 					this->trajStartTime_ = ros::Time::now();
@@ -359,7 +373,21 @@ namespace AutoFlight{
 				cout << "[AutoFlight]: Goal is not valid. Stop." << endl;
 			}
 
-
+			const double totalMs = std::chrono::duration<double, std::milli>(Clock::now()-localStart).count();
+			std_msgs::String event;
+			std::ostringstream json;
+			json << std::fixed << std::setprecision(3)
+				 << "{\"schema_version\":1,\"kind\":\"local\",\"sequence\":" << ++this->localPlanningSequence_
+				 << ",\"sim_time\":" << ros::Time::now().toSec()
+				 << ",\"success\":" << (planSuccess ? "true" : "false")
+				 << ",\"update_success\":" << (updateSuccess ? "true" : "false")
+				 << ",\"input_path_ms\":" << inputPathMs
+				 << ",\"update_path_ms\":" << updatePathMs
+				 << ",\"bspline_ms\":" << bsplineMs
+				 << ",\"total_ms\":" << totalMs
+				 << ",\"dynamic_obstacles\":" << obstaclesPos.size() << "}";
+			event.data = json.str();
+			this->planningEventPub_.publish(event);
 		}
 	}
 
@@ -834,7 +862,19 @@ namespace AutoFlight{
 				state = this->returningHome_ ? "RETURN_BLOCKED_SENSOR" : "EXPLORATION_BLOCKED_SENSOR";
 			} else if (this->returningHome_) {
 				const auto& p = this->homePose_.pose.position;
+				const auto returnStart = std::chrono::steady_clock::now();
 				bool success = this->expPlanner_->planReturnPath(Eigen::Vector3d(p.x,p.y,p.z), plannedWaypoints);
+				const double returnMs = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now()-returnStart).count();
+				std_msgs::String event;
+				std::ostringstream json;
+				json << std::fixed << std::setprecision(3)
+					 << "{\"schema_version\":1,\"kind\":\"return\",\"sim_time\":" << now
+					 << ",\"success\":" << (success ? "true" : "false")
+					 << ",\"total_ms\":" << returnMs
+					 << ",\"path_poses\":" << plannedWaypoints.poses.size() << "}";
+				event.data = json.str();
+				this->planningEventPub_.publish(event);
 				state = success ? "RETURNING_HOME" : "RETURN_BLOCKED";
 				if (success) {
 					plannedWaypoints.poses.back().pose.orientation = this->homePose_.pose.orientation;
@@ -842,6 +882,28 @@ namespace AutoFlight{
 				}
 			} else {
 				const bool success = this->expPlanner_->makePlan();
+				const globalPlanner::DEPPlanningMetrics metrics = this->expPlanner_->getLastPlanningMetrics();
+				std_msgs::String event;
+				std::ostringstream json;
+				json << std::fixed << std::setprecision(3)
+					 << "{\"schema_version\":1,\"kind\":\"global\",\"sequence\":" << metrics.sequence
+					 << ",\"sim_time\":" << now
+					 << ",\"success\":" << (metrics.success ? "true" : "false")
+					 << ",\"recovery_used\":" << (metrics.recoveryUsed ? "true" : "false")
+					 << ",\"roadmap_nodes\":" << metrics.roadmapNodes
+					 << ",\"goal_candidates\":" << metrics.goalCandidates
+					 << ",\"candidate_paths\":" << metrics.candidatePaths
+					 << ",\"best_path_gain\":" << metrics.bestPathGain
+					 << ",\"frontier_ms\":" << metrics.frontierMs
+					 << ",\"roadmap_ms\":" << metrics.roadmapMs
+					 << ",\"prune_ms\":" << metrics.pruneMs
+					 << ",\"gain_update_ms\":" << metrics.gainUpdateMs
+					 << ",\"goal_selection_ms\":" << metrics.goalSelectionMs
+					 << ",\"candidate_search_ms\":" << metrics.candidateSearchMs
+					 << ",\"path_scoring_ms\":" << metrics.pathScoringMs
+					 << ",\"total_ms\":" << metrics.totalMs << "}";
+				event.data = json.str();
+				this->planningEventPub_.publish(event);
 				int checkedNodes = 0;
 				// A failed path search is never completion by itself. If no path was
 				// produced, a fresh scan of every currently reachable roadmap node may

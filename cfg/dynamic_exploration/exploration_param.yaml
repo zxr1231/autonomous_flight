@@ -1,4 +1,5 @@
 odom_topic: "/CERLAB/quadcopter/odom"
+random_seed: 1
 # odom_topic: "/mavros/local_position/odom"
 local_region_min: [-5, -5, -2]
 local_region_max: [5, 5, 2]
