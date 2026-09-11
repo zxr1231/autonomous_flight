@@ -1,4 +1,5 @@
 <launch>
+	<arg name="benchmark_seed" default="1" />
 	<remap from="/mavros/local_position/odom" to="CERLAB/quadcopter/odom" />
 	<remap from="/mavros/setpoint_raw/local" to="CERLAB/quadcopter/cmd_acc" />
 	<rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
@@ -7,6 +8,7 @@
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_inspection/fake_detector_param.yaml" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/flight_base.yaml" ns="autonomous_flight"/>
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/exploration_param.yaml" ns="DEP"/>
+	<param name="/DEP/random_seed" value="$(arg benchmark_seed)" type="int" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/planner_param.yaml" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/dynamic_detector_param.yaml" ns="/onboard_detector" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/mapping_param.yaml" ns="/dynamic_map" />

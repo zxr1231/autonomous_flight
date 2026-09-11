@@ -70,6 +70,17 @@ int main(int argc, char** argv) {
     gate.observe(true,true,true,11,41);
     require(!gate.observe(true,true,true,12,1), "clock reset cannot complete");
 
+    globalPlanner::DEP seededA(nh), seededB(nh), seededC(nh);
+    seededA.setRandomSeed(42); seededB.setRandomSeed(42); seededC.setRandomSeed(43);
+    std::vector<int> sequenceA, sequenceB, sequenceC;
+    for (int i=0; i<32; ++i) {
+      sequenceA.push_back(seededA.weightedSample({1,2,3,4}));
+      sequenceB.push_back(seededB.weightedSample({1,2,3,4}));
+      sequenceC.push_back(seededC.weightedSample({1,2,3,4}));
+    }
+    require(sequenceA == sequenceB, "same DEP seed reproduces weighted sampling");
+    require(sequenceA != sequenceC, "different DEP seed changes weighted sampling");
+
     globalPlanner::DEP planner(nh);
     auto map = std::make_shared<TestMap>();
     const Vector3d start(-2.3,0,1), home(2.3,0,1);
