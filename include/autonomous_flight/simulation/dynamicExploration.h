@@ -73,8 +73,11 @@ namespace AutoFlight{
 		bool resultReady_ = false;
 		nav_msgs::Path resultPath_;
 		std::string resultState_;
+		uint64_t resultGlobalSequence_ = 0;
 		std::string missionState_;
 		uint64_t localPlanningSequence_ = 0;
+		uint64_t returnPlanningSequence_ = 0;
+		uint64_t activeGlobalSequence_ = 0;
 		bool replan_ = false;
 		bool newWaypoints_ = false;
 		int waypointIdx_ = 1;
