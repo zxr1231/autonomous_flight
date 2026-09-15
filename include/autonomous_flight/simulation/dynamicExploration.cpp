@@ -9,6 +9,29 @@
 #include <iomanip>
 #include <sstream>
 
+namespace {
+	double pathLength(const nav_msgs::Path& path){
+		double length = 0.0;
+		for (size_t i=1; i<path.poses.size(); ++i){
+			const auto& a = path.poses[i-1].pose.position;
+			const auto& b = path.poses[i].pose.position;
+			const double dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z;
+			length += std::sqrt(dx*dx + dy*dy + dz*dz);
+		}
+		return length;
+	}
+	void appendPathPoints(std::ostringstream& json, const std::string& key,
+						  const nav_msgs::Path& path){
+		json << ",\"" << key << "\":[";
+		for (size_t i=0; i<path.poses.size(); ++i){
+			if (i) json << ",";
+			const auto& p = path.poses[i].pose.position;
+			json << "[" << p.x << "," << p.y << "," << p.z << "]";
+		}
+		json << "]";
+	}
+}
+
 namespace AutoFlight{
 	dynamicExploration::dynamicExploration(const ros::NodeHandle& nh) : flightBase(nh){
 		this->initParam();
@@ -206,6 +229,7 @@ namespace AutoFlight{
 		if (this->replan_){
 			using Clock = std::chrono::steady_clock;
 			const auto localStart = Clock::now();
+			const uint64_t localSequence = ++this->localPlanningSequence_;
 			double inputPathMs = 0.0, updatePathMs = 0.0, bsplineMs = 0.0;
 			bool planSuccess = false;
 			std::vector<Eigen::Vector3d> obstaclesPos, obstaclesVel, obstaclesSize;
@@ -377,15 +401,25 @@ namespace AutoFlight{
 			std_msgs::String event;
 			std::ostringstream json;
 			json << std::fixed << std::setprecision(3)
-				 << "{\"schema_version\":1,\"kind\":\"local\",\"sequence\":" << ++this->localPlanningSequence_
+				 << "{\"schema_version\":2,\"kind\":\"local\",\"sequence\":" << localSequence
+				 << ",\"global_sequence\":" << this->activeGlobalSequence_
+				 << ",\"trajectory_id\":" << (planSuccess ? localSequence : 0)
+				 << ",\"waypoint_index\":" << std::max(0, this->waypointIdx_-1)
 				 << ",\"sim_time\":" << ros::Time::now().toSec()
 				 << ",\"success\":" << (planSuccess ? "true" : "false")
 				 << ",\"update_success\":" << (updateSuccess ? "true" : "false")
 				 << ",\"input_path_ms\":" << inputPathMs
 				 << ",\"update_path_ms\":" << updatePathMs
 				 << ",\"bspline_ms\":" << bsplineMs
+				 << ",\"input_path_length\":" << pathLength(inputTraj)
+				 << ",\"input_path_poses\":" << inputTraj.poses.size()
+				 << ",\"bspline_path_length\":" << (planSuccess ? pathLength(this->bsplineTrajMsg_) : 0.0)
+				 << ",\"bspline_path_poses\":" << (planSuccess ? this->bsplineTrajMsg_.poses.size() : 0)
 				 << ",\"total_ms\":" << totalMs
-				 << ",\"dynamic_obstacles\":" << obstaclesPos.size() << "}";
+				 << ",\"dynamic_obstacles\":" << obstaclesPos.size();
+			appendPathPoints(json, "input_path_points", inputTraj);
+			if (planSuccess) appendPathPoints(json, "bspline_path_points", this->bsplineTrajMsg_);
+			json << "}";
 			event.data = json.str();
 			this->planningEventPub_.publish(event);
 		}
@@ -406,6 +440,7 @@ namespace AutoFlight{
 				this->setMissionState(this->resultState_);
 				if (this->resultPath_.poses.size() >= 2) {
 					this->waypoints_ = this->resultPath_;
+					this->activeGlobalSequence_ = this->resultGlobalSequence_;
 					this->waypointIdx_ = 1;
 					this->newWaypoints_ = true;
 				} else {
@@ -852,6 +887,7 @@ namespace AutoFlight{
 			}
 			if (pending) { this->explorationReplan_ = true; ros::WallDuration(0.05).sleep(); continue; }
 			nav_msgs::Path plannedWaypoints;
+			uint64_t plannedGlobalSequence = 0;
 			std::string state;
 			const double now = ros::Time::now().toSec();
 			const double depthTime = this->lastDepthTime_.load();
@@ -864,15 +900,20 @@ namespace AutoFlight{
 				const auto& p = this->homePose_.pose.position;
 				const auto returnStart = std::chrono::steady_clock::now();
 				bool success = this->expPlanner_->planReturnPath(Eigen::Vector3d(p.x,p.y,p.z), plannedWaypoints);
+				const uint64_t returnSequence = ++this->returnPlanningSequence_;
 				const double returnMs = std::chrono::duration<double, std::milli>(
 					std::chrono::steady_clock::now()-returnStart).count();
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
-					 << "{\"schema_version\":1,\"kind\":\"return\",\"sim_time\":" << now
+					 << "{\"schema_version\":2,\"kind\":\"return\",\"sequence\":" << returnSequence
+					 << ",\"sim_time\":" << now
 					 << ",\"success\":" << (success ? "true" : "false")
 					 << ",\"total_ms\":" << returnMs
-					 << ",\"path_poses\":" << plannedWaypoints.poses.size() << "}";
+					 << ",\"path_length\":" << pathLength(plannedWaypoints)
+					 << ",\"path_poses\":" << plannedWaypoints.poses.size();
+				appendPathPoints(json, "path_points", plannedWaypoints);
+				json << "}";
 				event.data = json.str();
 				this->planningEventPub_.publish(event);
 				state = success ? "RETURNING_HOME" : "RETURN_BLOCKED";
@@ -883,10 +924,12 @@ namespace AutoFlight{
 			} else {
 				const bool success = this->expPlanner_->makePlan();
 				const globalPlanner::DEPPlanningMetrics metrics = this->expPlanner_->getLastPlanningMetrics();
+				plannedGlobalSequence = metrics.sequence;
+				nav_msgs::Path selectedPath = success ? this->expPlanner_->getBestPath() : nav_msgs::Path();
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
-					 << "{\"schema_version\":1,\"kind\":\"global\",\"sequence\":" << metrics.sequence
+					 << "{\"schema_version\":2,\"kind\":\"global\",\"sequence\":" << metrics.sequence
 					 << ",\"sim_time\":" << now
 					 << ",\"success\":" << (metrics.success ? "true" : "false")
 					 << ",\"recovery_used\":" << (metrics.recoveryUsed ? "true" : "false")
@@ -894,6 +937,8 @@ namespace AutoFlight{
 					 << ",\"goal_candidates\":" << metrics.goalCandidates
 					 << ",\"candidate_paths\":" << metrics.candidatePaths
 					 << ",\"best_path_gain\":" << metrics.bestPathGain
+					 << ",\"selected_path_length\":" << pathLength(selectedPath)
+					 << ",\"selected_path_poses\":" << selectedPath.poses.size()
 					 << ",\"frontier_ms\":" << metrics.frontierMs
 					 << ",\"roadmap_ms\":" << metrics.roadmapMs
 					 << ",\"prune_ms\":" << metrics.pruneMs
@@ -901,7 +946,9 @@ namespace AutoFlight{
 					 << ",\"goal_selection_ms\":" << metrics.goalSelectionMs
 					 << ",\"candidate_search_ms\":" << metrics.candidateSearchMs
 					 << ",\"path_scoring_ms\":" << metrics.pathScoringMs
-					 << ",\"total_ms\":" << metrics.totalMs << "}";
+					 << ",\"total_ms\":" << metrics.totalMs;
+				appendPathPoints(json, "selected_path_points", selectedPath);
+				json << "}";
 				event.data = json.str();
 				this->planningEventPub_.publish(event);
 				int checkedNodes = 0;
@@ -923,7 +970,7 @@ namespace AutoFlight{
 				} else if (exhausted) {
 					state = "CONFIRMING_COMPLETE";
 				} else if (success) {
-					plannedWaypoints = this->expPlanner_->getBestPath();
+					plannedWaypoints = selectedPath;
 					state = "EXPLORING";
 				} else state = "EXPLORATION_BLOCKED";
 			}
@@ -931,6 +978,7 @@ namespace AutoFlight{
 				std::lock_guard<std::mutex> lock(this->resultMutex_);
 				this->resultPath_ = plannedWaypoints;
 				this->resultState_ = state;
+				this->resultGlobalSequence_ = plannedGlobalSequence;
 				this->resultReady_ = true;
 			}
 			ROS_INFO("[AutoFlight] Planning wall time: %.3f s", (ros::WallTime::now()-startTime).toSec());
