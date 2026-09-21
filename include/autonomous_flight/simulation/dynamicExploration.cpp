@@ -230,6 +230,7 @@ namespace AutoFlight{
 			using Clock = std::chrono::steady_clock;
 			const auto localStart = Clock::now();
 			const uint64_t localSequence = ++this->localPlanningSequence_;
+			const std::string replanReason = this->pendingLocalReplanReason_;
 			double inputPathMs = 0.0, updatePathMs = 0.0, bsplineMs = 0.0;
 			bool planSuccess = false;
 			std::vector<Eigen::Vector3d> obstaclesPos, obstaclesVel, obstaclesSize;
@@ -374,6 +375,7 @@ namespace AutoFlight{
 						this->stop();
 						cout << "[AutoFlight]: Stop!!! Trajectory generation fails. Replan for dynamic obstacles." << endl;
 						this->replan_ = true;
+						this->pendingLocalReplanReason_ = "local_plan_retry_dynamic_collision";
 					}
 					else{
 						if (this->trajectoryReady_){
@@ -401,9 +403,13 @@ namespace AutoFlight{
 			std_msgs::String event;
 			std::ostringstream json;
 			json << std::fixed << std::setprecision(3)
-				 << "{\"schema_version\":2,\"kind\":\"local\",\"sequence\":" << localSequence
+				 << "{\"schema_version\":3,\"kind\":\"local\",\"sequence\":" << localSequence
 				 << ",\"global_sequence\":" << this->activeGlobalSequence_
 				 << ",\"trajectory_id\":" << (planSuccess ? localSequence : 0)
+				 << ",\"replan_reason\":\"" << replanReason << "\""
+				 << ",\"map_version\":" << this->map_->getMapVersion()
+				 << ",\"depth_sequence\":" << this->depthSequence_.load()
+				 << ",\"trajectory_start_sim\":" << (planSuccess ? this->trajStartTime_.toSec() : 0.0)
 				 << ",\"waypoint_index\":" << std::max(0, this->waypointIdx_-1)
 				 << ",\"sim_time\":" << ros::Time::now().toSec()
 				 << ",\"success\":" << (planSuccess ? "true" : "false")
@@ -422,6 +428,7 @@ namespace AutoFlight{
 			json << "}";
 			event.data = json.str();
 			this->planningEventPub_.publish(event);
+			if (planSuccess) this->pendingLocalReplanReason_ = "unspecified";
 		}
 	}
 
@@ -506,6 +513,7 @@ namespace AutoFlight{
 			// fflush(stdin);
 			// std::cin.get();		
 			this->replan_ = true;
+			this->pendingLocalReplanReason_ = "new_global_path";
 			this->newWaypoints_ = false;
 			if (this->waypointIdx_ < int(this->waypoints_.poses.size())){
 				this->goal_ = this->waypoints_.poses[this->waypointIdx_];
@@ -552,6 +560,7 @@ namespace AutoFlight{
 			else{
 				cout << "[AutoFlight]: Start planning for next waypoint." << endl;
 				this->replan_ = true;
+				this->pendingLocalReplanReason_ = "next_waypoint";
 			}
 			++this->waypointIdx_;
 			this->trajectoryReady_ = false;
@@ -600,6 +609,7 @@ namespace AutoFlight{
 
 			if (this->hasCollision()){ // if trajectory not ready, do not replan
 				this->replan_ = true;
+				this->pendingLocalReplanReason_ = "static_collision";
 				cout << "[AutoFlight]: Replan for collision." << endl;
 				return;
 			}
@@ -608,18 +618,21 @@ namespace AutoFlight{
 			if (this->computeExecutionDistance() >= 0.3 and this->hasDynamicCollision()){
 			// if (this->hasDynamicObstacle()){
 				this->replan_ = true;
+				this->pendingLocalReplanReason_ = "dynamic_collision";
 				cout << "[AutoFlight]: Replan for dynamic obstacles." << endl;
 				return;
 			}
 
 			if (this->computeExecutionDistance() >= 1.5 and AutoFlight::getPoseDistance(this->odom_.pose.pose, this->goal_.pose) >= 3){
 				this->replan_ = true;
+				this->pendingLocalReplanReason_ = "distance_progress";
 				cout << "[AutoFlight]: Regular replan." << endl;
 				return;
 			}
 
 			if (this->computeExecutionDistance() >= 0.3 and this->replanForDynamicObstacle()){
 				this->replan_ = true;
+				this->pendingLocalReplanReason_ = "dynamic_obstacle_periodic";
 				cout << "[AutoFlight]: Regular replan for dynamic obstacles." << endl;
 				return;
 			}
@@ -929,8 +942,10 @@ namespace AutoFlight{
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
-					 << "{\"schema_version\":2,\"kind\":\"global\",\"sequence\":" << metrics.sequence
+					 << "{\"schema_version\":3,\"kind\":\"global\",\"sequence\":" << metrics.sequence
 					 << ",\"sim_time\":" << now
+					 << ",\"map_version\":" << this->map_->getMapVersion()
+					 << ",\"depth_sequence\":" << this->depthSequence_.load()
 					 << ",\"success\":" << (metrics.success ? "true" : "false")
 					 << ",\"recovery_used\":" << (metrics.recoveryUsed ? "true" : "false")
 					 << ",\"roadmap_nodes\":" << metrics.roadmapNodes

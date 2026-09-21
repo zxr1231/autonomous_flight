@@ -78,6 +78,7 @@ namespace AutoFlight{
 		uint64_t localPlanningSequence_ = 0;
 		uint64_t returnPlanningSequence_ = 0;
 		uint64_t activeGlobalSequence_ = 0;
+		std::string pendingLocalReplanReason_ = "initial_path";
 		bool replan_ = false;
 		bool newWaypoints_ = false;
 		int waypointIdx_ = 1;
