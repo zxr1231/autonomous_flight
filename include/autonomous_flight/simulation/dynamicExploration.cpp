@@ -410,6 +410,10 @@ namespace AutoFlight{
 				 << ",\"map_version\":" << this->map_->getMapVersion()
 				 << ",\"depth_sequence\":" << this->depthSequence_.load()
 				 << ",\"trajectory_start_sim\":" << (planSuccess ? this->trajStartTime_.toSec() : 0.0)
+				 << ",\"start_x\":" << this->odom_.pose.pose.position.x
+				 << ",\"start_y\":" << this->odom_.pose.pose.position.y
+				 << ",\"start_z\":" << this->odom_.pose.pose.position.z
+				 << ",\"start_yaw\":" << AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation)
 				 << ",\"waypoint_index\":" << std::max(0, this->waypointIdx_-1)
 				 << ",\"sim_time\":" << ros::Time::now().toSec()
 				 << ",\"success\":" << (planSuccess ? "true" : "false")
@@ -939,6 +943,7 @@ namespace AutoFlight{
 				const globalPlanner::DEPPlanningMetrics metrics = this->expPlanner_->getLastPlanningMetrics();
 				plannedGlobalSequence = metrics.sequence;
 				nav_msgs::Path selectedPath = success ? this->expPlanner_->getBestPath() : nav_msgs::Path();
+				nav_msgs::Path rawPath = success ? this->expPlanner_->getBestRawPath() : nav_msgs::Path();
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
@@ -963,6 +968,7 @@ namespace AutoFlight{
 					 << ",\"path_scoring_ms\":" << metrics.pathScoringMs
 					 << ",\"total_ms\":" << metrics.totalMs;
 				appendPathPoints(json, "selected_path_points", selectedPath);
+				appendPathPoints(json, "raw_path_points", rawPath);
 				json << "}";
 				event.data = json.str();
 				this->planningEventPub_.publish(event);
