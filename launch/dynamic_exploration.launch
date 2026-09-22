@@ -1,5 +1,6 @@
 <launch>
 	<arg name="benchmark_seed" default="1" />
+	<arg name="path_gain_mode" default="legacy" />
 	<arg name="diagnostic_snapshot_enabled" default="false" />
 	<arg name="diagnostic_snapshot_directory" default="/tmp/cerlab_r2_snapshots" />
 	<remap from="/mavros/local_position/odom" to="CERLAB/quadcopter/odom" />
@@ -11,6 +12,7 @@
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/flight_base.yaml" ns="autonomous_flight"/>
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/exploration_param.yaml" ns="DEP"/>
 	<param name="/DEP/random_seed" value="$(arg benchmark_seed)" type="int" />
+	<param name="/DEP/path_gain/mode" value="$(arg path_gain_mode)" type="str" />
 	<param name="/DEP/diagnostics/snapshot_enabled" value="$(arg diagnostic_snapshot_enabled)" type="bool" />
 	<param name="/DEP/diagnostics/snapshot_directory" value="$(arg diagnostic_snapshot_directory)" type="str" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/planner_param.yaml" />

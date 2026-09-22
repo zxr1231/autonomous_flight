@@ -1,10 +1,12 @@
 <launch>
   <arg name="benchmark_seed" default="1" />
+  <arg name="path_gain_mode" default="legacy" />
   <arg name="diagnostic_snapshot_enabled" default="false" />
   <arg name="diagnostic_snapshot_directory" default="/tmp/cerlab_r2_snapshots" />
   <!-- Natural completion test in a small ROI. Does NOT force completion or raise gain threshold. -->
   <include file="$(find autonomous_flight)/launch/dynamic_exploration.launch">
     <arg name="benchmark_seed" value="$(arg benchmark_seed)" />
+    <arg name="path_gain_mode" value="$(arg path_gain_mode)" />
     <arg name="diagnostic_snapshot_enabled" value="$(arg diagnostic_snapshot_enabled)" />
     <arg name="diagnostic_snapshot_directory" value="$(arg diagnostic_snapshot_directory)" />
   </include>
