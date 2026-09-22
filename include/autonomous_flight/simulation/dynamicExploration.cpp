@@ -981,10 +981,15 @@ namespace AutoFlight{
 				else json << ",\"selected_duplicate_ratio\":null";
 				if (metrics.uniqueEvaluationMs >= 0.0) json << ",\"unique_evaluation_ms\":" << metrics.uniqueEvaluationMs;
 				else json << ",\"unique_evaluation_ms\":null";
+				if (metrics.uniqueMapVersion > 0) json << ",\"unique_map_version\":" << metrics.uniqueMapVersion;
+				else json << ",\"unique_map_version\":null";
 				if (metrics.uniqueTop1Changed >= 0) json << ",\"unique_top1_changed\":" << (metrics.uniqueTop1Changed ? "true" : "false");
 				else json << ",\"unique_top1_changed\":null";
-				json << ",\"unique_score_margin\":null"
-					 << ",\"gain_fallback_reason\":null"
+				if (metrics.uniqueScoreMargin >= 0.0) json << ",\"unique_score_margin\":" << metrics.uniqueScoreMargin;
+				else json << ",\"unique_score_margin\":null";
+				if (!metrics.gainFallbackReason.empty()) json << ",\"gain_fallback_reason\":\"" << metrics.gainFallbackReason << "\"";
+				else json << ",\"gain_fallback_reason\":null";
+				json
 					 << ",\"selected_path_length\":" << pathLength(selectedPath)
 					 << ",\"selected_path_poses\":" << selectedPath.poses.size()
 					 << ",\"frontier_ms\":" << metrics.frontierMs
