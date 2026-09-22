@@ -233,6 +233,7 @@ namespace AutoFlight{
 			const std::string replanReason = this->pendingLocalReplanReason_;
 			double inputPathMs = 0.0, updatePathMs = 0.0, bsplineMs = 0.0;
 			bool planSuccess = false;
+			bool executionSnapshotWritten = false;
 			std::vector<Eigen::Vector3d> obstaclesPos, obstaclesVel, obstaclesSize;
 			if (this->useFakeDetector_){
 				this->getDynamicObstacles(obstaclesPos, obstaclesVel, obstaclesSize);
@@ -349,6 +350,8 @@ namespace AutoFlight{
 					this->trajStartTime_ = ros::Time::now();
 					this->trajTime_ = 0.0; // reset trajectory time
 					this->trajectory_ = this->bsplineTraj_->getTrajectory();
+					executionSnapshotWritten =
+						this->expPlanner_->exportExecutionDiagnosticSnapshot(localSequence);
 
 					// optimize time
 					// ros::Time timeOptStartTime = ros::Time::now();
@@ -414,6 +417,9 @@ namespace AutoFlight{
 				 << ",\"start_y\":" << this->odom_.pose.pose.position.y
 				 << ",\"start_z\":" << this->odom_.pose.pose.position.z
 				 << ",\"start_yaw\":" << AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation)
+				 << ",\"execution_snapshot_written\":" << (executionSnapshotWritten ? "true" : "false")
+				 << ",\"execution_snapshot_name\":\"execution_"
+				 << std::setw(6) << std::setfill('0') << localSequence << "\""
 				 << ",\"waypoint_index\":" << std::max(0, this->waypointIdx_-1)
 				 << ",\"sim_time\":" << ros::Time::now().toSec()
 				 << ",\"success\":" << (planSuccess ? "true" : "false")
