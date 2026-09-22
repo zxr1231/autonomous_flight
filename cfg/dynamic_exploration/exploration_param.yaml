@@ -1,5 +1,12 @@
 odom_topic: "/CERLAB/quadcopter/odom"
 random_seed: 1
+
+# I1 path-gain contract. Only legacy is executable in I1-01; the two unique modes
+# are declared but fail closed until their evaluator is implemented.
+path_gain:
+  schema_version: 1
+  mode: "legacy" # legacy | unique_shadow | unique_online
+  sample_spacing: 0.25
 # odom_topic: "/mavros/local_position/odom"
 local_region_min: [-5, -5, -2]
 local_region_max: [5, 5, 2]

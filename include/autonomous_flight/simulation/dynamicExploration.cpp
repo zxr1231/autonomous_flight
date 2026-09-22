@@ -953,7 +953,7 @@ namespace AutoFlight{
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
-					 << "{\"schema_version\":3,\"kind\":\"global\",\"sequence\":" << metrics.sequence
+					 << "{\"schema_version\":4,\"kind\":\"global\",\"sequence\":" << metrics.sequence
 					 << ",\"sim_time\":" << now
 					 << ",\"map_version\":" << this->map_->getMapVersion()
 					 << ",\"depth_sequence\":" << this->depthSequence_.load()
@@ -963,6 +963,28 @@ namespace AutoFlight{
 					 << ",\"goal_candidates\":" << metrics.goalCandidates
 					 << ",\"candidate_paths\":" << metrics.candidatePaths
 					 << ",\"best_path_gain\":" << metrics.bestPathGain
+					 << ",\"gain_schema_version\":" << metrics.gainSchemaVersion
+					 << ",\"gain_mode\":\"" << metrics.configuredGainMode << "\""
+					 << ",\"selection_gain_mode\":\"" << metrics.selectionGainMode << "\""
+					 << ",\"gain_sample_spacing\":" << metrics.gainSampleSpacing
+					 << ",\"unique_evaluator_available\":"
+					 << (metrics.uniqueEvaluatorAvailable ? "true" : "false")
+					 << ",\"unique_evaluation_status\":\"" << metrics.uniqueEvaluationStatus << "\""
+					 << ",\"legacy_selected_candidate\":" << metrics.legacySelectedCandidate;
+				if (metrics.uniqueSelectedCandidate >= 0) json << ",\"unique_selected_candidate\":" << metrics.uniqueSelectedCandidate;
+				else json << ",\"unique_selected_candidate\":null";
+				if (metrics.selectedRawGain >= 0) json << ",\"selected_raw_gain\":" << metrics.selectedRawGain;
+				else json << ",\"selected_raw_gain\":null";
+				if (metrics.selectedUniqueGain >= 0) json << ",\"selected_unique_gain\":" << metrics.selectedUniqueGain;
+				else json << ",\"selected_unique_gain\":null";
+				if (metrics.selectedDuplicateRatio >= 0.0) json << ",\"selected_duplicate_ratio\":" << metrics.selectedDuplicateRatio;
+				else json << ",\"selected_duplicate_ratio\":null";
+				if (metrics.uniqueEvaluationMs >= 0.0) json << ",\"unique_evaluation_ms\":" << metrics.uniqueEvaluationMs;
+				else json << ",\"unique_evaluation_ms\":null";
+				if (metrics.uniqueTop1Changed >= 0) json << ",\"unique_top1_changed\":" << (metrics.uniqueTop1Changed ? "true" : "false");
+				else json << ",\"unique_top1_changed\":null";
+				json << ",\"unique_score_margin\":null"
+					 << ",\"gain_fallback_reason\":null"
 					 << ",\"selected_path_length\":" << pathLength(selectedPath)
 					 << ",\"selected_path_poses\":" << selectedPath.poses.size()
 					 << ",\"frontier_ms\":" << metrics.frontierMs
