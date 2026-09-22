@@ -1,8 +1,12 @@
 <launch>
   <arg name="benchmark_seed" default="1" />
+  <arg name="diagnostic_snapshot_enabled" default="false" />
+  <arg name="diagnostic_snapshot_directory" default="/tmp/cerlab_r2_snapshots" />
   <!-- Natural completion test in a small ROI. Does NOT force completion or raise gain threshold. -->
   <include file="$(find autonomous_flight)/launch/dynamic_exploration.launch">
     <arg name="benchmark_seed" value="$(arg benchmark_seed)" />
+    <arg name="diagnostic_snapshot_enabled" value="$(arg diagnostic_snapshot_enabled)" />
+    <arg name="diagnostic_snapshot_directory" value="$(arg diagnostic_snapshot_directory)" />
   </include>
   <rosparam param="/DEP/global_region_min">[-3.0, -3.0, 0.7]</rosparam>
   <rosparam param="/DEP/global_region_max">[3.0, 3.0, 1.2]</rosparam>
