@@ -1000,6 +1000,7 @@ namespace AutoFlight{
 					 << ",\"candidate_search_ms\":" << metrics.candidateSearchMs
 					 << ",\"path_scoring_ms\":" << metrics.pathScoringMs
 					 << ",\"total_ms\":" << metrics.totalMs;
+				if (!metrics.routeControlJson.empty()) json << ",\"route_controls\":" << metrics.routeControlJson;
 				appendPathPoints(json, "selected_path_points", selectedPath);
 				appendPathPoints(json, "raw_path_points", rawPath);
 				json << "}";
