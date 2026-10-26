@@ -7,6 +7,7 @@
 	<arg name="depth_image_topic" default="/camera/depth/image_raw" />
 	<arg name="depth_filter_invalid" default="false" />
 	<arg name="depth_track_valid_observations" default="false" />
+	<arg name="depth_evidence_arm" default="" />
 	<remap from="/mavros/local_position/odom" to="CERLAB/quadcopter/odom" />
 	<remap from="/mavros/setpoint_raw/local" to="CERLAB/quadcopter/cmd_acc" />
 	<rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
@@ -14,6 +15,7 @@
 
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_inspection/fake_detector_param.yaml" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/flight_base.yaml" ns="autonomous_flight"/>
+	<param name="/autonomous_flight/depth_evidence/arm" value="$(arg depth_evidence_arm)" type="str" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/exploration_param.yaml" ns="DEP"/>
 	<param name="/DEP/random_seed" value="$(arg benchmark_seed)" type="int" />
 	<param name="/DEP/route_controls/mode" value="$(arg route_control_mode)" type="str" />

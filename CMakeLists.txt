@@ -180,8 +180,15 @@ target_link_libraries(dynamic_inspection_node ${catkin_LIBRARIES} ${PROJECT_NAME
 target_link_libraries(dynamic_exploration_node ${catkin_LIBRARIES} ${PROJECT_NAME})
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(OpenCV REQUIRED COMPONENTS core)
   add_executable(return_home_checks test/return_home_checks.cpp)
   target_link_libraries(return_home_checks ${catkin_LIBRARIES} ${PROJECT_NAME})
+  catkin_add_gtest(evidence_obligation_test
+                    test/evidence_obligation_test.cpp
+                    test/angular_reliability_test.cpp
+                    test/depth_angular_observer_test.cpp
+                    test/observation_recovery_selector_test.cpp)
+  target_link_libraries(evidence_obligation_test ${OpenCV_LIBRARIES})
 endif()
 
 #############

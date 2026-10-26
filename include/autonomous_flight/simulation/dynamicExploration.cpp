@@ -5,6 +5,7 @@
 */
 
 #include <autonomous_flight/simulation/dynamicExploration.h>
+#include <autonomous_flight/simulation/depthAngularObserver.h>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -44,6 +45,22 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::initParam(){
+		this->nh_.param<std::string>("autonomous_flight/depth_evidence/arm",
+		                            this->depthEvidenceArm_, "");
+		if (this->depthEvidenceArm_ != "" && this->depthEvidenceArm_ != "A" &&
+		    this->depthEvidenceArm_ != "B" &&
+		    this->depthEvidenceArm_ != "F_DIAGNOSTIC"){
+			throw std::runtime_error("V2 recovery arm is not implemented; only A/B/F_DIAGNOSTIC are enabled");
+		}
+		if (this->depthEvidenceArm_ == "F_DIAGNOSTIC"){
+			std::vector<double> intrinsics;
+			if (!this->nh_.getParam("/dynamic_map/depth_intrinsics", intrinsics) ||
+			    intrinsics.size() != 4){
+				throw std::runtime_error("V2 arm F requires /dynamic_map/depth_intrinsics");
+			}
+			this->depthFx_ = intrinsics[0]; this->depthFy_ = intrinsics[1];
+			this->depthCx_ = intrinsics[2]; this->depthCy_ = intrinsics[3];
+		}
 		this->nh_.param("autonomous_flight/return_home_on_complete", this->returnHomeEnabled_, true);
 		this->nh_.param("autonomous_flight/completion_gain_threshold", this->completionGainThreshold_, 0);
 		this->completionGainThreshold_ = std::max(0, this->completionGainThreshold_);
@@ -197,6 +214,10 @@ namespace AutoFlight{
 		this->homePub_ = this->nh_.advertise<geometry_msgs::PoseStamped>("dynamicExploration/home", 1, true);
 		this->returnPathPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/return_path", 1, true);
 		this->planningEventPub_ = this->nh_.advertise<std_msgs::String>("dynamicExploration/planning_event", 100);
+		if (this->depthEvidenceArm_ == "F_DIAGNOSTIC"){
+			this->depthEvidenceStatusPub_ = this->nh_.advertise<std_msgs::String>(
+				"dynamicExploration/depth_evidence_status", 10);
+		}
 		std::string depthTopic;
 		this->nh_.param<std::string>("dynamic_map/depth_image_topic", depthTopic, "/camera/depth/image_raw");
 		this->completionDepthSub_ = this->nh_.subscribe(depthTopic, 1, &dynamicExploration::completionDepthCB, this);
@@ -1053,6 +1074,60 @@ namespace AutoFlight{
 		if (image->data.empty() || !image->width || !image->height) return;
 		this->lastDepthTime_ = image->header.stamp.toSec();
 		++this->depthSequence_;
+		if (this->depthEvidenceArm_ != "F_DIAGNOSTIC" || image->encoding != "32FC1" ||
+		    (++this->angularDiagnosticFrameCount_ % 5) != 0) return;
+		try {
+			const cv_bridge::CvImageConstPtr raw = cv_bridge::toCvShare(image, image->encoding);
+			const auto mapSnapshot = this->map_->captureSnapshot();
+			if (mapSnapshot.validHitFrameCount.empty()) return;
+			nav_msgs::OdometryConstPtr odom(new nav_msgs::Odometry(this->odom_));
+			Eigen::Matrix4d cameraToWorld;
+			this->map_->getCameraPose(odom, cameraToWorld);
+			std::vector<Eigen::Vector3d> obstaclePositions, obstacleVelocities, obstacleSizes;
+			this->getDynamicObstacles(obstaclePositions, obstacleVelocities, obstacleSizes);
+			const auto isDynamicReference = [&](const Eigen::Vector3d& point) {
+				for (std::size_t i=0; i<obstaclePositions.size(); ++i) {
+					const Eigen::Vector3d half = obstacleSizes[i] / 2.0 +
+					                             Eigen::Vector3d::Constant(0.3);
+					if (((point - obstaclePositions[i]).array().abs() <= half.array()).all())
+						return true;
+				}
+				return false;
+			};
+			DepthIntrinsics camera;
+			camera.fx = this->depthFx_; camera.fy = this->depthFy_;
+			camera.cx = this->depthCx_; camera.cy = this->depthCy_;
+			const auto frame = diagnoseAngularDepthFrame(
+				raw->image, cameraToWorld, camera, mapSnapshot, 16, isDynamicReference);
+			std_msgs::String status;
+			{
+				std::lock_guard<std::mutex> lock(this->angularReliabilityMutex_);
+				this->angularReliability_.observe(frame);
+				if (this->angularDiagnosticFrameCount_ % 20 == 0){
+					std::ostringstream json;
+					json << std::fixed << std::setprecision(3)
+					     << "{\"schema_version\":1,\"sim_time\":"
+					     << image->header.stamp.toSec()
+					     << ",\"map_version\":" << mapSnapshot.version
+					     << ",\"bins\":[";
+					for (std::size_t bin=0; bin<this->angularReliability_.binCount(); ++bin){
+						if (bin) json << ",";
+						const auto state = this->angularReliability_.state(bin);
+						const char* label = state == AngularReliabilityState::Healthy ? "healthy" :
+						                    state == AngularReliabilityState::Faulty ? "faulty" : "unknown";
+						json << "{\"state\":\"" << label
+						     << "\",\"lower\":" << this->angularReliability_.lowerBound(bin)
+						     << ",\"diagnostic_frames\":"
+						     << this->angularReliability_.diagnosticFrames(bin) << "}";
+					}
+					json << "]}";
+					status.data = json.str();
+				}
+			}
+			if (!status.data.empty()) this->depthEvidenceStatusPub_.publish(status);
+		} catch (const std::exception& error) {
+			ROS_WARN_THROTTLE(5.0, "V2 angular depth diagnosis failed: %s", error.what());
+		}
 	}
 
 	double dynamicExploration::computeExecutionDistance(){

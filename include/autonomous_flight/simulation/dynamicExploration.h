@@ -13,6 +13,7 @@
 #include <map_manager/dynamicMap.h>
 #include <onboard_detector/fakeDetector.h>
 #include <autonomous_flight/simulation/completionGate.h>
+#include <autonomous_flight/simulation/angularDepthReliability.h>
 #include <std_msgs/String.h>
 #include <sensor_msgs/Image.h>
 #include <atomic>
@@ -66,9 +67,15 @@ namespace AutoFlight{
 		geometry_msgs::PoseStamped homePose_;
 		CompletionGate completionGate_;
 		ros::Publisher missionStatePub_, homePub_, returnPathPub_, planningEventPub_;
+		ros::Publisher depthEvidenceStatusPub_;
 		ros::Subscriber completionDepthSub_;
 		std::atomic<double> lastDepthTime_{-1.0};
 		std::atomic<uint64_t> depthSequence_{0};
+		std::string depthEvidenceArm_;
+		AngularDepthReliability angularReliability_;
+		std::mutex angularReliabilityMutex_;
+		std::atomic<uint64_t> angularDiagnosticFrameCount_{0};
+		double depthFx_ = 0.0, depthFy_ = 0.0, depthCx_ = 0.0, depthCy_ = 0.0;
 		std::mutex resultMutex_;
 		bool resultReady_ = false;
 		nav_msgs::Path resultPath_;
