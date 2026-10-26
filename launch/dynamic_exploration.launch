@@ -4,6 +4,9 @@
 	<arg name="route_control_mode" default="historical_legacy" />
 	<arg name="diagnostic_snapshot_enabled" default="false" />
 	<arg name="diagnostic_snapshot_directory" default="/tmp/cerlab_r2_snapshots" />
+	<arg name="depth_image_topic" default="/camera/depth/image_raw" />
+	<arg name="depth_filter_invalid" default="false" />
+	<arg name="depth_track_valid_observations" default="false" />
 	<remap from="/mavros/local_position/odom" to="CERLAB/quadcopter/odom" />
 	<remap from="/mavros/setpoint_raw/local" to="CERLAB/quadcopter/cmd_acc" />
 	<rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
@@ -20,6 +23,9 @@
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/planner_param.yaml" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/dynamic_detector_param.yaml" ns="/onboard_detector" />
 	<rosparam file="$(find autonomous_flight)/cfg/dynamic_exploration/mapping_param.yaml" ns="/dynamic_map" />
+	<param name="/dynamic_map/depth_image_topic" value="$(arg depth_image_topic)" type="str" />
+	<param name="/dynamic_map/depth_evidence/filter_invalid" value="$(arg depth_filter_invalid)" type="bool" />
+	<param name="/dynamic_map/depth_evidence/track_valid_observations" value="$(arg depth_track_valid_observations)" type="bool" />
 
 	<node pkg="autonomous_flight" type="throttle_topics.sh" name="throttle_topics" />
 	<node pkg="autonomous_flight" type="dynamic_exploration_node" name="dynamic_exploration_node" output="screen" />
