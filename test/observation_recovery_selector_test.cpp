@@ -40,6 +40,17 @@ TEST(ObservationRecoverySelector, AvoidsFaultyCameraBinUnderSameCandidateBudget)
   EXPECT_NE(geometry.cameraBin, faultAware.cameraBin);
   EXPECT_NE(reliability.state(faultAware.cameraBin),
             AutoFlight::AngularReliabilityState::Faulty);
+  const auto retry = AutoFlight::selectObservationRecovery(
+      current, 0.0, bodyToCamera, target, camera, map, reliability, false, safe,
+      [&](const Eigen::Vector3d& position, double yaw) {
+        return (position - faultAware.bodyPosition).norm() < 0.05 &&
+               std::abs(AutoFlight::shortestAngleDifference(
+                   yaw, faultAware.bodyYaw)) < 0.05;
+      });
+  ASSERT_TRUE(retry.found);
+  EXPECT_FALSE((retry.bodyPosition - faultAware.bodyPosition).norm() < 0.05 &&
+               std::abs(AutoFlight::shortestAngleDifference(
+                   retry.bodyYaw, faultAware.bodyYaw)) < 0.05);
 }
 
 TEST(ObservationRecoverySelector, RejectsUncertifiedConnection) {

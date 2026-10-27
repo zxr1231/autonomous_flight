@@ -14,6 +14,7 @@
 #include <onboard_detector/fakeDetector.h>
 #include <autonomous_flight/simulation/completionGate.h>
 #include <autonomous_flight/simulation/angularDepthReliability.h>
+#include <autonomous_flight/simulation/evidenceObligation.h>
 #include <std_msgs/String.h>
 #include <sensor_msgs/Image.h>
 #include <atomic>
@@ -68,6 +69,7 @@ namespace AutoFlight{
 		CompletionGate completionGate_;
 		ros::Publisher missionStatePub_, homePub_, returnPathPub_, planningEventPub_;
 		ros::Publisher depthEvidenceStatusPub_;
+		ros::Publisher depthRecoveryEventPub_;
 		ros::Subscriber completionDepthSub_;
 		std::atomic<double> lastDepthTime_{-1.0};
 		std::atomic<uint64_t> depthSequence_{0};
@@ -75,7 +77,23 @@ namespace AutoFlight{
 		AngularDepthReliability angularReliability_;
 		std::mutex angularReliabilityMutex_;
 		std::atomic<uint64_t> angularDiagnosticFrameCount_{0};
+		std::atomic<bool> depthFaultObserved_{false};
 		double depthFx_ = 0.0, depthFy_ = 0.0, depthCx_ = 0.0, depthCy_ = 0.0;
+		Eigen::Matrix4d depthBodyToCamera_ = Eigen::Matrix4d::Identity();
+		Eigen::Vector3d initialClearCenter_ = Eigen::Vector3d::Zero();
+		enum class DepthRecoveryPhase { Idle, Select, Moving, WaitEvidence, Hold, Blocked };
+		DepthRecoveryPhase depthRecoveryPhase_ = DepthRecoveryPhase::Idle;
+		Eigen::Vector3d depthObligation_ = Eigen::Vector3d::Zero();
+		double depthRecoveryBaseYaw_ = 0.0;
+		double depthRecoveryStartSim_ = 0.0;
+		double depthRecoveryPhaseStartSim_ = 0.0;
+		int depthRecoveryAttempts_ = 0;
+		geometry_msgs::PoseStamped depthRecoveryGoal_;
+		geometry_msgs::PoseStamped depthSavedGoal_;
+		std::vector<std::pair<Eigen::Vector3d, double>> depthTriedActions_;
+		void publishDepthRecoveryEvent(const std::string& event,
+		                               const std::string& reason = "",
+		                               double decisionMs = -1.0);
 		std::mutex resultMutex_;
 		bool resultReady_ = false;
 		nav_msgs::Path resultPath_;
@@ -125,6 +143,10 @@ namespace AutoFlight{
 		void exploreReplan();
 		void setMissionState(const std::string& state);
 		void completionDepthCB(const sensor_msgs::ImageConstPtr& image);
+		bool depthRecoveryEnabled() const;
+		EvidenceObligation inspectDepthEvidencePath(const nav_msgs::Path& path);
+		void beginDepthRecovery(const EvidenceObligation& obligation);
+		bool handleDepthRecovery();
 		double computeExecutionDistance();
 		bool replanForDynamicObstacle();
 		bool reachExplorationGoal();

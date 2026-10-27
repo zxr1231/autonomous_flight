@@ -6,6 +6,7 @@
 
 #include <autonomous_flight/simulation/dynamicExploration.h>
 #include <autonomous_flight/simulation/depthAngularObserver.h>
+#include <autonomous_flight/simulation/observationRecoverySelector.h>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -49,10 +50,12 @@ namespace AutoFlight{
 		                            this->depthEvidenceArm_, "");
 		if (this->depthEvidenceArm_ != "" && this->depthEvidenceArm_ != "A" &&
 		    this->depthEvidenceArm_ != "B" &&
+		    this->depthEvidenceArm_ != "C" && this->depthEvidenceArm_ != "D" &&
+		    this->depthEvidenceArm_ != "E" && this->depthEvidenceArm_ != "F" &&
 		    this->depthEvidenceArm_ != "F_DIAGNOSTIC"){
-			throw std::runtime_error("V2 recovery arm is not implemented; only A/B/F_DIAGNOSTIC are enabled");
+			throw std::runtime_error("unknown V2 depth evidence arm");
 		}
-		if (this->depthEvidenceArm_ == "F_DIAGNOSTIC"){
+		if (this->depthRecoveryEnabled() || this->depthEvidenceArm_ == "F_DIAGNOSTIC"){
 			std::vector<double> intrinsics;
 			if (!this->nh_.getParam("/dynamic_map/depth_intrinsics", intrinsics) ||
 			    intrinsics.size() != 4){
@@ -60,6 +63,15 @@ namespace AutoFlight{
 			}
 			this->depthFx_ = intrinsics[0]; this->depthFy_ = intrinsics[1];
 			this->depthCx_ = intrinsics[2]; this->depthCy_ = intrinsics[3];
+			if (this->depthEvidenceArm_ == "E" || this->depthEvidenceArm_ == "F"){
+				std::vector<double> matrix;
+				if (!this->nh_.getParam("/dynamic_map/body_to_camera", matrix) ||
+				    matrix.size() != 16)
+					throw std::runtime_error("V2 E/F require /dynamic_map/body_to_camera");
+				for (int row=0; row<4; ++row)
+					for (int col=0; col<4; ++col)
+						this->depthBodyToCamera_(row,col) = matrix[4*row+col];
+			}
 		}
 		this->nh_.param("autonomous_flight/return_home_on_complete", this->returnHomeEnabled_, true);
 		this->nh_.param("autonomous_flight/completion_gain_threshold", this->completionGainThreshold_, 0);
@@ -214,9 +226,14 @@ namespace AutoFlight{
 		this->homePub_ = this->nh_.advertise<geometry_msgs::PoseStamped>("dynamicExploration/home", 1, true);
 		this->returnPathPub_ = this->nh_.advertise<nav_msgs::Path>("dynamicExploration/return_path", 1, true);
 		this->planningEventPub_ = this->nh_.advertise<std_msgs::String>("dynamicExploration/planning_event", 100);
-		if (this->depthEvidenceArm_ == "F_DIAGNOSTIC"){
+		if (this->depthEvidenceArm_ == "F_DIAGNOSTIC" ||
+		    this->depthRecoveryEnabled()){
 			this->depthEvidenceStatusPub_ = this->nh_.advertise<std_msgs::String>(
 				"dynamicExploration/depth_evidence_status", 10);
+		}
+		if (this->depthRecoveryEnabled()){
+			this->depthRecoveryEventPub_ = this->nh_.advertise<std_msgs::String>(
+				"dynamicExploration/depth_recovery_event", 20);
 		}
 		std::string depthTopic;
 		this->nh_.param<std::string>("dynamic_map/depth_image_topic", depthTopic, "/camera/depth/image_raw");
@@ -253,7 +270,9 @@ namespace AutoFlight{
 			const uint64_t localSequence = ++this->localPlanningSequence_;
 			const std::string replanReason = this->pendingLocalReplanReason_;
 			double inputPathMs = 0.0, updatePathMs = 0.0, bsplineMs = 0.0;
+			double depthEvidenceCheckMs = 0.0;
 			bool planSuccess = false;
+			bool depthEvidenceRejected = false;
 			bool executionSnapshotWritten = false;
 			std::vector<Eigen::Vector3d> obstaclesPos, obstaclesVel, obstaclesSize;
 			if (this->useFakeDetector_){
@@ -366,6 +385,26 @@ namespace AutoFlight{
 				const auto bsplineStart = Clock::now();
 				planSuccess = this->bsplineTraj_->makePlan(bsplineTrajMsgTemp);
 				bsplineMs = std::chrono::duration<double, std::milli>(Clock::now()-bsplineStart).count();
+				if (planSuccess && this->depthRecoveryEnabled() &&
+				    this->depthFaultObserved_ && !this->returningHome_){
+					const auto evidenceStart = Clock::now();
+					const auto obligation = this->inspectDepthEvidencePath(bsplineTrajMsgTemp);
+					depthEvidenceCheckMs = std::chrono::duration<double, std::milli>(
+						Clock::now()-evidenceStart).count();
+					if (obligation.found){
+						depthEvidenceRejected = true;
+						planSuccess = false;
+						if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Idle){
+							this->beginDepthRecovery(obligation);
+						} else if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Moving){
+							this->trajectoryReady_ = false;
+							this->replan_ = false;
+							this->depthRecoveryPhase_ = DepthRecoveryPhase::Select;
+							this->stop();
+							this->publishDepthRecoveryEvent("ACTION_REJECTED", "bspline_missing_evidence");
+						}
+					}
+				}
 				if (planSuccess){
 					this->bsplineTrajMsg_ = bsplineTrajMsgTemp;
 					this->trajStartTime_ = ros::Time::now();
@@ -383,6 +422,17 @@ namespace AutoFlight{
 					this->trajectoryReady_ = true;
 					this->replan_ = false;
 					cout << "\033[1;32m[AutoFlight]: Trajectory generated successfully.\033[0m " << endl;
+				}
+				else if (depthEvidenceRejected){
+					// A generated spline was deliberately withheld until its swept
+					// volume has actual valid-depth evidence.
+				}
+				else if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Moving){
+					this->trajectoryReady_ = false;
+					this->replan_ = false;
+					this->depthRecoveryPhase_ = DepthRecoveryPhase::Select;
+					this->stop();
+					this->publishDepthRecoveryEvent("ACTION_REJECTED", "bspline_plan_failed");
 				}
 				else{
 					// if the current trajectory is still valid, then just ignore this iteration
@@ -419,7 +469,10 @@ namespace AutoFlight{
 				this->trajectoryReady_ = false;
 				this->stop();
 				this->replan_ = false;
-				this->explorationReplan_ = true;
+				if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Moving){
+					this->depthRecoveryPhase_ = DepthRecoveryPhase::Select;
+					this->publishDepthRecoveryEvent("ACTION_REJECTED", "path_update_failed");
+				} else this->explorationReplan_ = true;
 				cout << "[AutoFlight]: Goal is not valid. Stop." << endl;
 			}
 
@@ -444,10 +497,13 @@ namespace AutoFlight{
 				 << ",\"waypoint_index\":" << std::max(0, this->waypointIdx_-1)
 				 << ",\"sim_time\":" << ros::Time::now().toSec()
 				 << ",\"success\":" << (planSuccess ? "true" : "false")
+					 << ",\"depth_evidence_rejected\":"
+					 << (depthEvidenceRejected ? "true" : "false")
 				 << ",\"update_success\":" << (updateSuccess ? "true" : "false")
 				 << ",\"input_path_ms\":" << inputPathMs
 				 << ",\"update_path_ms\":" << updatePathMs
 				 << ",\"bspline_ms\":" << bsplineMs
+					 << ",\"depth_evidence_check_ms\":" << depthEvidenceCheckMs
 				 << ",\"input_path_length\":" << pathLength(inputTraj)
 				 << ",\"input_path_poses\":" << inputTraj.poses.size()
 				 << ",\"bspline_path_length\":" << (planSuccess ? pathLength(this->bsplineTrajMsg_) : 0.0)
@@ -467,6 +523,7 @@ namespace AutoFlight{
 		if (this->handlingWaypoints_) return; // moveToOrientation spins callbacks recursively.
 		struct Guard { bool& busy; Guard(bool& b): busy(b) {busy=true;} ~Guard(){busy=false;} } guard(this->handlingWaypoints_);
 		if (this->homeReached_) return;
+		if (this->depthRecoveryEnabled() && this->handleDepthRecovery()) return;
 		{
 			std::lock_guard<std::mutex> lock(this->resultMutex_);
 			if (this->resultReady_) {
@@ -790,6 +847,7 @@ namespace AutoFlight{
 		// set start region to be free
 		// Eigen::Vector3d range (2.0, 2.0, 1.0);
 		Eigen::Vector3d startPos (this->odom_.pose.pose.position.x, this->odom_.pose.pose.position.y, this->odom_.pose.pose.position.z);
+		this->initialClearCenter_ = startPos;
 		Eigen::Vector3d c1 = startPos - this->freeRange_;
 		Eigen::Vector3d c2 = startPos + this->freeRange_;
 		this->map_->freeRegion(c1, c2);
@@ -1074,7 +1132,8 @@ namespace AutoFlight{
 		if (image->data.empty() || !image->width || !image->height) return;
 		this->lastDepthTime_ = image->header.stamp.toSec();
 		++this->depthSequence_;
-		if (this->depthEvidenceArm_ != "F_DIAGNOSTIC" || image->encoding != "32FC1" ||
+		if ((!this->depthRecoveryEnabled() &&
+		     this->depthEvidenceArm_ != "F_DIAGNOSTIC") || image->encoding != "32FC1" ||
 		    (++this->angularDiagnosticFrameCount_ % 5) != 0) return;
 		try {
 			const cv_bridge::CvImageConstPtr raw = cv_bridge::toCvShare(image, image->encoding);
@@ -1103,6 +1162,11 @@ namespace AutoFlight{
 			{
 				std::lock_guard<std::mutex> lock(this->angularReliabilityMutex_);
 				this->angularReliability_.observe(frame);
+				bool anyFaulty = false;
+				for (std::size_t bin=0; bin<this->angularReliability_.binCount(); ++bin)
+					if (this->angularReliability_.state(bin) == AngularReliabilityState::Faulty)
+						anyFaulty = true;
+				this->depthFaultObserved_ = anyFaulty;
 				if (this->angularDiagnosticFrameCount_ % 20 == 0){
 					std::ostringstream json;
 					json << std::fixed << std::setprecision(3)
@@ -1128,6 +1192,232 @@ namespace AutoFlight{
 		} catch (const std::exception& error) {
 			ROS_WARN_THROTTLE(5.0, "V2 angular depth diagnosis failed: %s", error.what());
 		}
+	}
+
+	bool dynamicExploration::depthRecoveryEnabled() const {
+		return this->depthEvidenceArm_ == "C" || this->depthEvidenceArm_ == "D" ||
+		       this->depthEvidenceArm_ == "E" || this->depthEvidenceArm_ == "F";
+	}
+
+	void dynamicExploration::publishDepthRecoveryEvent(const std::string& name,
+	                                                  const std::string& reason,
+	                                                  double decisionMs) {
+		if (!this->depthRecoveryEnabled()) return;
+		std_msgs::String message;
+		std::ostringstream json;
+		json << std::fixed << std::setprecision(3)
+		     << "{\"schema_version\":1,\"event\":\"" << name
+		     << "\",\"reason\":\"" << reason
+		     << "\",\"arm\":\"" << this->depthEvidenceArm_
+		     << "\",\"sim_time\":" << ros::Time::now().toSec()
+		     << ",\"attempts\":" << this->depthRecoveryAttempts_
+		     << ",\"decision_ms\":";
+		if (decisionMs < 0.0) json << "null";
+		else json << decisionMs;
+		json
+		     << ",\"obligation\":[" << this->depthObligation_.x() << ","
+		     << this->depthObligation_.y() << "," << this->depthObligation_.z() << "]}";
+		message.data = json.str();
+		this->depthRecoveryEventPub_.publish(message);
+	}
+
+	EvidenceObligation dynamicExploration::inspectDepthEvidencePath(const nav_msgs::Path& path) {
+		std::vector<Eigen::Vector3d> positions;
+		positions.reserve(path.poses.size());
+		for (const auto& pose : path.poses) {
+			positions.emplace_back(pose.pose.position.x, pose.pose.position.y,
+			                       pose.pose.position.z);
+		}
+		Eigen::Vector3d robotSize;
+		this->map_->getRobotSize(robotSize);
+		const auto hasEvidence = [&](const Eigen::Vector3d& point) {
+			const bool startPrior =
+				((point - this->initialClearCenter_).array().abs() <= this->freeRange_.array()).all();
+			return this->map_->isFree(point) &&
+			       (startPrior || this->map_->hasValidDepthEvidence(point));
+		};
+		return firstMissingBodyEvidence(positions, robotSize / 2.0,
+		                                1.5, 0.05, hasEvidence);
+	}
+
+	void dynamicExploration::beginDepthRecovery(const EvidenceObligation& obligation) {
+		this->depthObligation_ = obligation.missingEvidencePosition;
+		this->depthSavedGoal_ = this->goal_;
+		this->depthRecoveryBaseYaw_ = AutoFlight::rpy_from_quaternion(
+			this->odom_.pose.pose.orientation);
+		this->depthRecoveryStartSim_ = ros::Time::now().toSec();
+		this->depthRecoveryPhaseStartSim_ = this->depthRecoveryStartSim_;
+		this->depthRecoveryAttempts_ = 0;
+		this->depthTriedActions_.clear();
+		this->depthRecoveryPhase_ = (this->depthEvidenceArm_ == "C") ?
+			DepthRecoveryPhase::Hold : DepthRecoveryPhase::Select;
+		this->trajectoryReady_ = false;
+		this->bsplineTrajMsg_.poses.clear();
+		this->replan_ = false;
+		this->explorationReplan_ = false;
+		this->stop();
+		this->publishDepthRecoveryEvent("OBLIGATION_STARTED");
+	}
+
+	bool dynamicExploration::handleDepthRecovery() {
+		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Idle) return false;
+		if (this->returningHome_) {
+			this->depthRecoveryPhase_ = DepthRecoveryPhase::Idle;
+			return false;
+		}
+		const double now = ros::Time::now().toSec();
+		const auto finish = [&]() {
+			this->goal_ = this->depthSavedGoal_;
+			this->trajectoryReady_ = false;
+			this->replan_ = false;
+			this->depthRecoveryPhase_ = DepthRecoveryPhase::Idle;
+			{
+				std::lock_guard<std::mutex> lock(this->resultMutex_);
+				this->resultReady_ = false;
+			}
+			this->explorationReplan_ = true;
+		};
+		if (this->map_->hasValidDepthEvidence(this->depthObligation_)) {
+			this->publishDepthRecoveryEvent("OBLIGATION_OBSERVED");
+			finish();
+			return true;
+		}
+		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Blocked) return true;
+		if (now - this->depthRecoveryStartSim_ >= 10.0 &&
+		    this->depthRecoveryPhase_ != DepthRecoveryPhase::Hold) {
+			this->depthRecoveryPhase_ = DepthRecoveryPhase::Blocked;
+			this->trajectoryReady_ = false;
+			this->replan_ = false;
+			this->stop();
+			this->publishDepthRecoveryEvent("RECOVERY_BLOCKED", "time_budget");
+			return true;
+		}
+		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Hold) {
+			if (now - this->depthRecoveryPhaseStartSim_ >= 10.0) {
+				this->publishDepthRecoveryEvent("HOLD_EXPIRED");
+				finish();
+			}
+			return true;
+		}
+		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::WaitEvidence) {
+			if (now - this->depthRecoveryPhaseStartSim_ >= 1.0) {
+				this->depthRecoveryPhase_ = this->depthRecoveryAttempts_ >= 2 ?
+					DepthRecoveryPhase::Blocked : DepthRecoveryPhase::Select;
+				this->publishDepthRecoveryEvent(
+					this->depthRecoveryPhase_ == DepthRecoveryPhase::Blocked ?
+					"RECOVERY_BLOCKED" : "RETRY", "no_new_evidence");
+			}
+			return true;
+		}
+		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Moving) {
+			if (this->isReach(this->depthRecoveryGoal_, 0.15, false)) {
+				this->trajectoryReady_ = false;
+				this->stop();
+				this->moveToOrientation(
+					AutoFlight::rpy_from_quaternion(this->depthRecoveryGoal_.pose.orientation),
+					this->desiredAngularVel_);
+				this->depthRecoveryPhase_ = DepthRecoveryPhase::WaitEvidence;
+				this->depthRecoveryPhaseStartSim_ = ros::Time::now().toSec();
+				this->publishDepthRecoveryEvent("ACTION_REACHED");
+			} else if (this->trajectoryReady_ &&
+			           (this->hasCollision() || this->hasDynamicCollision())) {
+				this->trajectoryReady_ = false;
+				this->replan_ = false;
+				this->stop();
+				this->depthRecoveryPhase_ = DepthRecoveryPhase::Select;
+				this->publishDepthRecoveryEvent("ACTION_REJECTED", "collision_change");
+			}
+			return true;
+		}
+
+		if (this->depthRecoveryAttempts_ >= 2) {
+			this->depthRecoveryPhase_ = DepthRecoveryPhase::Blocked;
+			this->publishDepthRecoveryEvent("RECOVERY_BLOCKED", "attempt_budget");
+			return true;
+		}
+		const auto decisionStart = std::chrono::steady_clock::now();
+		const Eigen::Vector3d current(this->odom_.pose.pose.position.x,
+		                             this->odom_.pose.pose.position.y,
+		                             this->odom_.pose.pose.position.z);
+		const double yaw = AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation);
+		Eigen::Vector3d targetPosition = current;
+		double targetYaw = yaw;
+		if (this->depthEvidenceArm_ == "D") {
+			targetYaw = this->depthRecoveryBaseYaw_ +
+				(this->depthRecoveryAttempts_ == 0 ? M_PI/3.0 : -M_PI/3.0);
+		} else {
+			const auto snapshot = this->map_->captureSnapshot();
+			AngularDepthReliability reliability;
+			if (this->depthEvidenceArm_ == "F") {
+				std::lock_guard<std::mutex> lock(this->angularReliabilityMutex_);
+				reliability = this->angularReliability_;
+			}
+			DepthIntrinsics camera;
+			camera.fx = this->depthFx_; camera.fy = this->depthFy_;
+			camera.cx = this->depthCx_; camera.cy = this->depthCy_;
+			Eigen::Vector3d robotSize;
+			this->map_->getRobotSize(robotSize);
+			const auto safeConnection = [&](const Eigen::Vector3d& target) {
+				if ((target - current).norm() < 1e-6)
+					return this->map_->isInflatedFree(current);
+				if (!this->map_->isInflatedFreeLine(current, target)) return false;
+				const auto hasEvidence = [&](const Eigen::Vector3d& point) {
+					const bool startPrior =
+						((point - this->initialClearCenter_).array().abs() <=
+						 this->freeRange_.array()).all();
+					return this->map_->isFree(point) &&
+					       (startPrior || this->map_->hasValidDepthEvidence(point));
+				};
+				return !firstMissingBodyEvidence(
+					{current, target}, robotSize / 2.0, 0.5, 0.05, hasEvidence).found;
+			};
+			const auto alreadyTried = [&](const Eigen::Vector3d& pos, double candidateYaw) {
+				for (const auto& previous : this->depthTriedActions_)
+					if ((previous.first-pos).norm() < 0.05 &&
+					    std::abs(shortestAngleDifference(previous.second, candidateYaw)) < 0.05)
+						return true;
+				return false;
+			};
+			const auto action = selectObservationRecovery(
+				current, yaw, this->depthBodyToCamera_, this->depthObligation_,
+				camera, snapshot, reliability, this->depthEvidenceArm_ == "E",
+				safeConnection, alreadyTried);
+			if (!action.found) {
+				const double decisionMs = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now()-decisionStart).count();
+				this->depthRecoveryPhase_ = DepthRecoveryPhase::Blocked;
+				this->stop();
+				this->publishDepthRecoveryEvent("RECOVERY_BLOCKED", "no_safe_view", decisionMs);
+				return true;
+			}
+			targetPosition = action.bodyPosition;
+			targetYaw = action.bodyYaw;
+		}
+		const double decisionMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now()-decisionStart).count();
+		++this->depthRecoveryAttempts_;
+		this->depthTriedActions_.push_back({targetPosition, targetYaw});
+		if ((targetPosition - current).norm() < 0.05) {
+			this->moveToOrientation(targetYaw, this->desiredAngularVel_);
+			this->stop();
+			this->depthRecoveryPhase_ = DepthRecoveryPhase::WaitEvidence;
+			this->depthRecoveryPhaseStartSim_ = ros::Time::now().toSec();
+			this->publishDepthRecoveryEvent("ROTATE_EXECUTED", "", decisionMs);
+			return true;
+		}
+		this->depthRecoveryGoal_.header.frame_id = "map";
+		this->depthRecoveryGoal_.pose = this->odom_.pose.pose;
+		this->depthRecoveryGoal_.pose.position.x = targetPosition.x();
+		this->depthRecoveryGoal_.pose.position.y = targetPosition.y();
+		this->depthRecoveryGoal_.pose.position.z = targetPosition.z();
+		this->depthRecoveryGoal_.pose.orientation =
+			AutoFlight::quaternion_from_rpy(0, 0, targetYaw);
+		this->goal_ = this->depthRecoveryGoal_;
+		this->depthRecoveryPhase_ = DepthRecoveryPhase::Moving;
+		this->replan_ = true;
+		this->pendingLocalReplanReason_ = "depth_recovery";
+		this->publishDepthRecoveryEvent("MOVE_PLANNING", "", decisionMs);
+		return true;
 	}
 
 	double dynamicExploration::computeExecutionDistance(){

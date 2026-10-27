@@ -70,7 +70,8 @@ inline ObservationRecoveryAction selectObservationRecovery(
     const mapManager::OccupancyMapSnapshot& map,
     const AngularDepthReliability& reliability,
     bool uniformReliability,
-    const std::function<bool(const Eigen::Vector3d&)>& safeConnection) {
+    const std::function<bool(const Eigen::Vector3d&)>& safeConnection,
+    const std::function<bool(const Eigen::Vector3d&, double)>& alreadyTried = {}) {
   ObservationRecoveryAction best;
   const Eigen::Vector3d offsets[] = {
       Eigen::Vector3d::Zero(), Eigen::Vector3d(0.5, 0.0, 0.0),
@@ -84,6 +85,7 @@ inline ObservationRecoveryAction selectObservationRecovery(
       ++best.inspectedCandidates;
       if (!connectionSafe) continue;
       const double yaw = currentYaw + degree * M_PI / 180.0;
+      if (alreadyTried && alreadyTried(bodyPosition, yaw)) continue;
       Eigen::Matrix4d bodyToWorld = Eigen::Matrix4d::Identity();
       bodyToWorld.block<3, 3>(0, 0) =
           Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
