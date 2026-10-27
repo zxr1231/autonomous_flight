@@ -1382,6 +1382,28 @@ namespace AutoFlight{
 				current, yaw, this->depthBodyToCamera_, this->depthObligation_,
 				camera, snapshot, reliability, this->depthEvidenceArm_ == "E",
 				safeConnection, alreadyTried);
+			std_msgs::String diagnostic;
+			std::ostringstream diagnosticJson;
+			diagnosticJson << std::fixed << std::setprecision(3)
+			               << "{\"schema_version\":1,\"event\":\"CANDIDATE_DIAGNOSTIC\""
+			               << ",\"arm\":\"" << this->depthEvidenceArm_ << "\""
+			               << ",\"sim_time\":" << ros::Time::now().toSec()
+			               << ",\"obligation\":[" << this->depthObligation_.x() << ","
+			               << this->depthObligation_.y() << "," << this->depthObligation_.z() << "]"
+			               << ",\"inspected\":" << action.inspectedCandidates
+			               << ",\"safe_positions\":" << action.safePositions
+			               << ",\"rejected_connection\":" << action.rejectedConnection
+			               << ",\"rejected_tried\":" << action.rejectedTried
+			               << ",\"rejected_range\":" << action.rejectedRange
+			               << ",\"rejected_fov\":" << action.rejectedFov
+			               << ",\"rejected_map_bounds\":" << action.rejectedMapBounds
+			               << ",\"rejected_unknown_ray\":" << action.rejectedUnknownRay
+			               << ",\"rejected_occupied_ray\":" << action.rejectedOccupiedRay
+			               << ",\"rejected_unhealthy_bin\":" << action.rejectedUnhealthyBin
+			               << ",\"viable_candidates\":" << action.viableCandidates
+			               << ",\"selected\":" << (action.found ? "true" : "false") << "}";
+			diagnostic.data = diagnosticJson.str();
+			this->depthRecoveryEventPub_.publish(diagnostic);
 			if (!action.found) {
 				const double decisionMs = std::chrono::duration<double, std::milli>(
 					std::chrono::steady_clock::now()-decisionStart).count();

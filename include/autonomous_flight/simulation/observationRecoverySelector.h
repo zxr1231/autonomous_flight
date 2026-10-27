@@ -19,6 +19,20 @@ struct ObservationRecoveryAction {
   std::size_t cameraBin = 0;
   double estimatedTime = std::numeric_limits<double>::infinity();
   std::size_t inspectedCandidates = 0;
+  std::size_t safePositions = 0;
+  std::size_t rejectedConnection = 0;
+  std::size_t rejectedTried = 0;
+  std::size_t rejectedRange = 0;
+  std::size_t rejectedFov = 0;
+  std::size_t rejectedMapBounds = 0;
+  std::size_t rejectedUnknownRay = 0;
+  std::size_t rejectedOccupiedRay = 0;
+  std::size_t rejectedUnhealthyBin = 0;
+  std::size_t viableCandidates = 0;
+};
+
+enum class ObservationVisibilityFailure {
+  None, Range, Fov, MapBounds, UnknownRay, OccupiedRay
 };
 
 inline double shortestAngleDifference(double from, double to) {
@@ -30,14 +44,22 @@ inline bool rayCanObserveObligation(
     const Eigen::Vector3d& obligation,
     const DepthIntrinsics& camera,
     const mapManager::OccupancyMapSnapshot& map,
-    std::size_t& cameraBin) {
+    std::size_t& cameraBin,
+    ObservationVisibilityFailure* failure = nullptr) {
+  if (failure) *failure = ObservationVisibilityFailure::None;
   const Eigen::Vector3d origin = cameraToWorld.block<3, 1>(0, 3);
   const Eigen::Vector3d local =
       cameraToWorld.block<3, 3>(0, 0).transpose() * (obligation - origin);
-  if (local.z() < camera.minimum || local.z() >= camera.maximum) return false;
+  if (local.z() < camera.minimum || local.z() >= camera.maximum) {
+    if (failure) *failure = ObservationVisibilityFailure::Range;
+    return false;
+  }
   const double u = camera.fx * local.x() / local.z() + camera.cx;
   const double v = camera.fy * local.y() / local.z() + camera.cy;
-  if (u < 0.0 || u >= 640.0 || v < 0.0 || v >= 480.0) return false;
+  if (u < 0.0 || u >= 640.0 || v < 0.0 || v >= 480.0) {
+    if (failure) *failure = ObservationVisibilityFailure::Fov;
+    return false;
+  }
   cameraBin = std::min<std::size_t>(15, static_cast<std::size_t>(u / 40.0));
 
   const Eigen::Vector3d direction = (obligation - origin).normalized();
@@ -47,13 +69,25 @@ inline bool rayCanObserveObligation(
     const Eigen::Vector3i idx = ((point - map.mapMin) / map.resolution)
                                     .array().floor().cast<int>();
     if ((idx.array() < 0).any() ||
-        (idx.array() >= map.dimensions.array()).any()) return false;
+        (idx.array() >= map.dimensions.array()).any()) {
+      if (failure) *failure = ObservationVisibilityFailure::MapBounds;
+      return false;
+    }
     const std::size_t address = static_cast<std::size_t>(idx.x()) *
         map.dimensions.y() * map.dimensions.z() +
         static_cast<std::size_t>(idx.y()) * map.dimensions.z() + idx.z();
-    if (address >= map.occupancy.size() ||
-        map.occupancy[address] < map.pMinLog ||
-        map.occupancy[address] >= map.pOccLog) return false;
+    if (address >= map.occupancy.size()) {
+      if (failure) *failure = ObservationVisibilityFailure::MapBounds;
+      return false;
+    }
+    if (map.occupancy[address] < map.pMinLog) {
+      if (failure) *failure = ObservationVisibilityFailure::UnknownRay;
+      return false;
+    }
+    if (map.occupancy[address] >= map.pOccLog) {
+      if (failure) *failure = ObservationVisibilityFailure::OccupiedRay;
+      return false;
+    }
   }
   return true;
 }
@@ -81,22 +115,43 @@ inline ObservationRecoveryAction selectObservationRecovery(
   for (const auto& offset : offsets) {
     const Eigen::Vector3d bodyPosition = currentPosition + offset;
     const bool connectionSafe = safeConnection(bodyPosition);
+    if (connectionSafe) ++best.safePositions;
     for (int degree : degrees) {
       ++best.inspectedCandidates;
-      if (!connectionSafe) continue;
+      if (!connectionSafe) {
+        ++best.rejectedConnection;
+        continue;
+      }
       const double yaw = currentYaw + degree * M_PI / 180.0;
-      if (alreadyTried && alreadyTried(bodyPosition, yaw)) continue;
+      if (alreadyTried && alreadyTried(bodyPosition, yaw)) {
+        ++best.rejectedTried;
+        continue;
+      }
       Eigen::Matrix4d bodyToWorld = Eigen::Matrix4d::Identity();
       bodyToWorld.block<3, 3>(0, 0) =
           Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
       bodyToWorld.block<3, 1>(0, 3) = bodyPosition;
       const Eigen::Matrix4d cameraToWorld = bodyToWorld * bodyToCamera;
       std::size_t bin = 0;
-      if (!rayCanObserveObligation(cameraToWorld, obligation, camera, map, bin))
+      ObservationVisibilityFailure failure = ObservationVisibilityFailure::None;
+      if (!rayCanObserveObligation(cameraToWorld, obligation, camera, map, bin,
+                                   &failure)) {
+        switch (failure) {
+          case ObservationVisibilityFailure::Range: ++best.rejectedRange; break;
+          case ObservationVisibilityFailure::Fov: ++best.rejectedFov; break;
+          case ObservationVisibilityFailure::MapBounds: ++best.rejectedMapBounds; break;
+          case ObservationVisibilityFailure::UnknownRay: ++best.rejectedUnknownRay; break;
+          case ObservationVisibilityFailure::OccupiedRay: ++best.rejectedOccupiedRay; break;
+          case ObservationVisibilityFailure::None: break;
+        }
         continue;
+      }
       if (!uniformReliability &&
-          reliability.state(bin) != AngularReliabilityState::Healthy)
+          reliability.state(bin) != AngularReliabilityState::Healthy) {
+        ++best.rejectedUnhealthyBin;
         continue;
+      }
+      ++best.viableCandidates;
       const double cost = offset.norm() / 1.0 +
           std::abs(shortestAngleDifference(currentYaw, yaw)) / 0.5;
       if (cost < best.estimatedTime) {

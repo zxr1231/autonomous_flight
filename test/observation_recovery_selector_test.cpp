@@ -37,6 +37,12 @@ TEST(ObservationRecoverySelector, AvoidsFaultyCameraBinUnderSameCandidateBudget)
   ASSERT_TRUE(faultAware.found);
   EXPECT_EQ(geometry.inspectedCandidates, 35u);
   EXPECT_EQ(faultAware.inspectedCandidates, 35u);
+  EXPECT_EQ(faultAware.inspectedCandidates,
+            faultAware.rejectedConnection + faultAware.rejectedTried +
+            faultAware.rejectedRange + faultAware.rejectedFov +
+            faultAware.rejectedMapBounds + faultAware.rejectedUnknownRay +
+            faultAware.rejectedOccupiedRay + faultAware.rejectedUnhealthyBin +
+            faultAware.viableCandidates);
   EXPECT_NE(geometry.cameraBin, faultAware.cameraBin);
   EXPECT_NE(reliability.state(faultAware.cameraBin),
             AutoFlight::AngularReliabilityState::Faulty);
@@ -72,4 +78,7 @@ TEST(ObservationRecoverySelector, RejectsUncertifiedConnection) {
       Eigen::Vector3d(3.0, 0.0, 1.0), camera, map, reliability, true,
       [](const Eigen::Vector3d&) { return false; });
   EXPECT_FALSE(result.found);
+  EXPECT_EQ(result.safePositions, 0u);
+  EXPECT_EQ(result.rejectedConnection, 35u);
+  EXPECT_EQ(result.viableCandidates, 0u);
 }
