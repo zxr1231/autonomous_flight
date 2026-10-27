@@ -91,6 +91,7 @@ namespace AutoFlight{
 		geometry_msgs::PoseStamped depthRecoveryGoal_;
 		geometry_msgs::PoseStamped depthSavedGoal_;
 		std::vector<std::pair<Eigen::Vector3d, double>> depthTriedActions_;
+		std::vector<Eigen::Vector3d> depthHeldObligations_;
 		void publishDepthRecoveryEvent(const std::string& event,
 		                               const std::string& reason = "",
 		                               double decisionMs = -1.0);

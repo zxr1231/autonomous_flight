@@ -1249,14 +1249,26 @@ namespace AutoFlight{
 		this->depthRecoveryPhaseStartSim_ = this->depthRecoveryStartSim_;
 		this->depthRecoveryAttempts_ = 0;
 		this->depthTriedActions_.clear();
-		this->depthRecoveryPhase_ = (this->depthEvidenceArm_ == "C") ?
-			DepthRecoveryPhase::Hold : DepthRecoveryPhase::Select;
+		bool alreadyHeld = false;
+		if (this->depthEvidenceArm_ == "C") {
+			for (const auto& previous : this->depthHeldObligations_) {
+				if ((previous - this->depthObligation_).norm() < this->map_->getRes()) {
+					alreadyHeld = true;
+					break;
+				}
+			}
+		}
+		this->depthRecoveryPhase_ = alreadyHeld ? DepthRecoveryPhase::Blocked :
+			(this->depthEvidenceArm_ == "C" ? DepthRecoveryPhase::Hold :
+			 DepthRecoveryPhase::Select);
 		this->trajectoryReady_ = false;
 		this->bsplineTrajMsg_.poses.clear();
 		this->replan_ = false;
 		this->explorationReplan_ = false;
 		this->stop();
 		this->publishDepthRecoveryEvent("OBLIGATION_STARTED");
+		if (alreadyHeld) this->publishDepthRecoveryEvent(
+			"RECOVERY_BLOCKED", "hold_budget_exhausted_same_obligation");
 	}
 
 	bool dynamicExploration::handleDepthRecovery() {
@@ -1294,6 +1306,7 @@ namespace AutoFlight{
 		}
 		if (this->depthRecoveryPhase_ == DepthRecoveryPhase::Hold) {
 			if (now - this->depthRecoveryPhaseStartSim_ >= 10.0) {
+				this->depthHeldObligations_.push_back(this->depthObligation_);
 				this->publishDepthRecoveryEvent("HOLD_EXPIRED");
 				finish();
 			}
@@ -1357,10 +1370,18 @@ namespace AutoFlight{
 			camera.cx = this->depthCx_; camera.cy = this->depthCy_;
 			Eigen::Vector3d robotSize;
 			this->map_->getRobotSize(robotSize);
+			std::size_t rejectedByInflatedMap = 0;
+			std::size_t rejectedByBodyEvidence = 0;
 			const auto safeConnection = [&](const Eigen::Vector3d& target) {
-				if ((target - current).norm() < 1e-6)
-					return this->map_->isInflatedFree(current);
-				if (!this->map_->isInflatedFreeLine(current, target)) return false;
+				if ((target - current).norm() < 1e-6) {
+					if (this->map_->isInflatedFree(current)) return true;
+					++rejectedByInflatedMap;
+					return false;
+				}
+				if (!this->map_->isInflatedFreeLine(current, target)) {
+					++rejectedByInflatedMap;
+					return false;
+				}
 				const auto hasEvidence = [&](const Eigen::Vector3d& point) {
 					const bool startPrior =
 						((point - this->initialClearCenter_).array().abs() <=
@@ -1368,8 +1389,10 @@ namespace AutoFlight{
 					return this->map_->isFree(point) &&
 					       (startPrior || this->map_->hasValidDepthEvidence(point));
 				};
-				return !firstMissingBodyEvidence(
+				const bool missing = firstMissingBodyEvidence(
 					{current, target}, robotSize / 2.0, 0.5, 0.05, hasEvidence).found;
+				if (missing) ++rejectedByBodyEvidence;
+				return !missing;
 			};
 			const auto alreadyTried = [&](const Eigen::Vector3d& pos, double candidateYaw) {
 				for (const auto& previous : this->depthTriedActions_)
@@ -1393,6 +1416,8 @@ namespace AutoFlight{
 			               << ",\"inspected\":" << action.inspectedCandidates
 			               << ",\"safe_positions\":" << action.safePositions
 			               << ",\"rejected_connection\":" << action.rejectedConnection
+			               << ",\"rejected_inflated_map_positions\":" << rejectedByInflatedMap
+			               << ",\"rejected_body_evidence_positions\":" << rejectedByBodyEvidence
 			               << ",\"rejected_tried\":" << action.rejectedTried
 			               << ",\"rejected_range\":" << action.rejectedRange
 			               << ",\"rejected_fov\":" << action.rejectedFov
