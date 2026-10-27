@@ -1248,6 +1248,7 @@ namespace AutoFlight{
 		this->depthRecoveryStartSim_ = ros::Time::now().toSec();
 		this->depthRecoveryPhaseStartSim_ = this->depthRecoveryStartSim_;
 		this->depthRecoveryAttempts_ = 0;
+		this->depthRecoveryLastActionInPlace_ = false;
 		this->depthTriedActions_.clear();
 		bool alreadyHeld = false;
 		if (this->depthEvidenceArm_ == "C") {
@@ -1395,6 +1396,10 @@ namespace AutoFlight{
 				return !missing;
 			};
 			const auto alreadyTried = [&](const Eigen::Vector3d& pos, double candidateYaw) {
+				// A failed in-place scan should not consume the final action
+				// budget on another scan when a safe translation exists.
+				if (this->depthRecoveryLastActionInPlace_ &&
+				    (pos - current).norm() < 0.05) return true;
 				for (const auto& previous : this->depthTriedActions_)
 					if ((previous.first-pos).norm() < 0.05 &&
 					    std::abs(shortestAngleDifference(previous.second, candidateYaw)) < 0.05)
@@ -1444,7 +1449,8 @@ namespace AutoFlight{
 			std::chrono::steady_clock::now()-decisionStart).count();
 		++this->depthRecoveryAttempts_;
 		this->depthTriedActions_.push_back({targetPosition, targetYaw});
-		if ((targetPosition - current).norm() < 0.05) {
+		this->depthRecoveryLastActionInPlace_ = (targetPosition - current).norm() < 0.05;
+		if (this->depthRecoveryLastActionInPlace_) {
 			this->moveToOrientation(targetYaw, this->desiredAngularVel_);
 			this->stop();
 			this->depthRecoveryPhase_ = DepthRecoveryPhase::WaitEvidence;

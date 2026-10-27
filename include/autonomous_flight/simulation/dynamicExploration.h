@@ -88,6 +88,7 @@ namespace AutoFlight{
 		double depthRecoveryStartSim_ = 0.0;
 		double depthRecoveryPhaseStartSim_ = 0.0;
 		int depthRecoveryAttempts_ = 0;
+		bool depthRecoveryLastActionInPlace_ = false;
 		geometry_msgs::PoseStamped depthRecoveryGoal_;
 		geometry_msgs::PoseStamped depthSavedGoal_;
 		std::vector<std::pair<Eigen::Vector3d, double>> depthTriedActions_;
