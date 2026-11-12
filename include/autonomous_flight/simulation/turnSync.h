@@ -53,6 +53,11 @@ struct TurnSchedule {
   }
   double motionTime(double time)const{return std::max(0.,time-delay);}
 };
+inline bool delayBoundaryValid(double delay,double initialSpeed,double initialAcceleration) {
+  if(!std::isfinite(delay)||!std::isfinite(initialSpeed)||!std::isfinite(initialAcceleration)||delay<0)return false;
+  // Only a newly inserted hold requires rest on both sides of its boundary.
+  return delay==0 || (initialSpeed<=.02 && initialAcceleration<=.05);
+}
 template<class Set> double retainedFraction(const Set& reference,const Set& observed){
   if(reference.empty())return 1.;
   size_t found=0;for(const auto& a:reference)found+=observed.count(a)!=0;

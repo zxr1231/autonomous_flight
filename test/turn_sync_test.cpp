@@ -48,4 +48,11 @@ TEST(TurnSync, RetentionThresholdIsReferenceBased){
  EXPECT_DOUBLE_EQ(AutoFlight::retainedFraction(a,b),.98);
  b.erase(97);b.insert(500);EXPECT_DOUBLE_EQ(AutoFlight::retainedFraction(a,b),.97);
 }
+TEST(TurnSync, RestConstraintOnlyForInsertedHold){
+ EXPECT_TRUE(AutoFlight::delayBoundaryValid(0,.07,.2));
+ EXPECT_FALSE(AutoFlight::delayBoundaryValid(1,.07,.2));
+ EXPECT_TRUE(AutoFlight::delayBoundaryValid(1,.01,.01));
+ EXPECT_FALSE(AutoFlight::delayBoundaryValid(0,NAN,0));
+ EXPECT_FALSE(AutoFlight::delayBoundaryValid(-1,0,0));
+}
 int main(int argc,char** argv){testing::InitGoogleTest(&argc,argv);return RUN_ALL_TESTS();}

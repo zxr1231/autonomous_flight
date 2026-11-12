@@ -288,7 +288,6 @@ namespace AutoFlight{
 			nav_msgs::Path inputTraj;
 			std::vector<Eigen::Vector3d> startEndConditions;
 			this->getStartEndConditions(startEndConditions);
-            if (this->turnPending_) { startEndConditions[0].setZero(); startEndConditions[2].setZero(); }
 			// double initTs = this->bsplineTraj_->getInitTs();
 
 			// generate new trajectory

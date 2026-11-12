@@ -44,8 +44,12 @@ bool dynamicExploration::configureTurnSync(trajPlanner::bspline curve){
     const double flight=curve.getDuration()/factor;
     auto velocity=curve.getDerivative();auto acceleration=velocity.getDerivative();
     if(flight<=0 || !std::isfinite(flight))throw std::runtime_error("invalid_curve");
-    if((curve.at(0)-turnOrigin_).norm()>.03 || velocity.at(0).norm()*factor>.02 ||
-       acceleration.at(0).norm()*factor*factor>.05)throw std::runtime_error("nonrest_curve_start");
+    const double gap=(curve.at(0)-turnOrigin_).norm();
+    const double startSpeed=velocity.at(0).norm()*factor;
+    const double startAcceleration=acceleration.at(0).norm()*factor*factor;
+    ROS_INFO_STREAM("[TurnSyncGeometry] {\"sim_time\":"<<ros::Time::now().toSec()
+       <<",\"gap\":"<<gap<<",\"initial_speed\":"<<startSpeed<<",\"initial_acceleration\":"<<startAcceleration<<"}");
+    if(gap>.03)throw std::runtime_error("curve_start_position");
     double marginXY=.3,marginZ=0;
     nh_.param("DEP/safe_distance_xy",marginXY,.3);nh_.param("DEP/safe_distance_z",marginZ,0.);
     FrozenTurnSafety safety(map.occupancy,map.inflated,map.mapMin,map.dimensions,map.resolution,map.pMinLog,map.pOccLog);
@@ -64,6 +68,9 @@ bool dynamicExploration::configureTurnSync(trajPlanner::bspline curve){
     const double step=std::min(.02,map.resolution/(2*std::max(.1,desiredVel_)));
     for(double fraction:{0.,.5}){
       const double delay=fraction*turnSchedule_.duration;
+      if(!delayBoundaryValid(delay,startSpeed,startAcceleration)){
+        turnEvent("candidate_delayed_nonrest",elapsed());continue;
+      }
       bool valid=true;Eigen::Vector3d previous=turnOrigin_;
       const double horizon=std::max(turnSchedule_.duration,delay+flight);
       const int n=int(std::ceil(horizon/step));
