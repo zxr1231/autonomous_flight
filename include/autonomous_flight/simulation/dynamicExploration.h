@@ -19,6 +19,7 @@
 #include <sensor_msgs/Image.h>
 #include <atomic>
 #include <mutex>
+#include <autonomous_flight/simulation/turnSync.h>
 
 
 namespace AutoFlight{
@@ -60,6 +61,15 @@ namespace AutoFlight{
 		bool homeReached_ = false;
 		bool settlingHome_ = false;
 		bool handlingWaypoints_ = false;
+		std::string turnMode_ = "serial";
+		bool turnPending_ = false, turnActive_ = false;
+		double turnTarget_ = 0.0;
+		TurnSchedule turnSchedule_;
+		Eigen::Vector3d turnOrigin_ = Eigen::Vector3d::Zero();
+		void requestExplorationTurn(double yaw, bool hasNext);
+		bool configureTurnSync(trajPlanner::bspline curve);
+		void turnEvent(const std::string& reason, double elapsedMs=0,
+		               size_t reference=0, double retained=0);
 		bool returnHomeEnabled_ = true;
 		int completionGainThreshold_ = 0;
 		double homeTolerance_ = 0.2;

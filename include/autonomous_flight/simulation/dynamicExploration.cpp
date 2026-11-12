@@ -46,6 +46,10 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::initParam(){
+        this->nh_.param<std::string>("autonomous_flight/turn_sync_mode", this->turnMode_, "serial");
+        if (this->turnMode_ != "serial" && this->turnMode_ != "parallel" && this->turnMode_ != "observation")
+            throw std::runtime_error("invalid turn_sync_mode");
+
 		this->nh_.param<std::string>("autonomous_flight/depth_evidence/arm",
 		                            this->depthEvidenceArm_, "");
 		if (this->depthEvidenceArm_ != "" && this->depthEvidenceArm_ != "A" &&
@@ -283,7 +287,8 @@ namespace AutoFlight{
 			}			
 			nav_msgs::Path inputTraj;
 			std::vector<Eigen::Vector3d> startEndConditions;
-			this->getStartEndConditions(startEndConditions); 
+			this->getStartEndConditions(startEndConditions);
+            if (this->turnPending_) { startEndConditions[0].setZero(); startEndConditions[2].setZero(); }
 			// double initTs = this->bsplineTraj_->getInitTs();
 
 			// generate new trajectory
@@ -407,6 +412,13 @@ namespace AutoFlight{
 				}
 				if (planSuccess){
 					this->bsplineTrajMsg_ = bsplineTrajMsgTemp;
+                    if (this->turnPending_ && !this->configureTurnSync(this->bsplineTraj_->getTrajectory())) {
+                        this->turnPending_ = false; this->turnActive_ = false;
+                        this->trajectoryReady_ = false; this->handlingWaypoints_ = true;
+                        this->moveToOrientation(this->turnTarget_, this->desiredAngularVel_);
+                        this->handlingWaypoints_ = false; this->replan_ = true;
+                        return;
+                    }
 					this->trajStartTime_ = ros::Time::now();
 					this->trajTime_ = 0.0; // reset trajectory time
 					this->trajectory_ = this->bsplineTraj_->getTrajectory();
@@ -579,6 +591,23 @@ namespace AutoFlight{
 			3. fixed distance
 		*/
 
+        if (this->turnActive_) {
+            bool prefixSafe = true;
+            if (this->trajectoryReady_) {
+                for (double dt=0; dt<=.2; dt+=.02) {
+                    double u=std::min(this->trajectory_.getDuration(), this->trajTime_+dt*this->bsplineTraj_->getLinearFactor());
+                    if (!this->expPlanner_->isPosValid(this->trajectory_.at(u))) prefixSafe=false;
+                }
+            }
+            if (!prefixSafe || !this->trajectoryReady_ || this->hasCollision() || this->hasDynamicCollision() ||
+                !this->expPlanner_->isPosValid(this->trajectory_.at(this->trajectory_.getDuration()))) {
+                this->turnEvent("runtime_safety_abort");
+                this->turnActive_ = false; this->turnPending_ = false;
+                this->trajectoryReady_ = false; this->stop();
+                this->replan_ = false; this->explorationReplan_ = true;
+            }
+            return;
+        }
 		if (this->newWaypoints_){
 			if (this->waypoints_.poses.size() < 2){
 				this->newWaypoints_ = false;
@@ -595,7 +624,7 @@ namespace AutoFlight{
 			// std::cin.clear();
 			// fflush(stdin);
 			// std::cin.get();
-			this->moveToOrientation(yaw, this->desiredAngularVel_);
+			this->requestExplorationTurn(yaw, true);
 			// cout << "[AutoFlight]: Press ENTER to move forward." << endl;
 			// std::cin.clear();
 			// fflush(stdin);
@@ -629,7 +658,7 @@ namespace AutoFlight{
 			geometry_msgs::Quaternion quat = this->goal_.pose.orientation;
 			double yaw = AutoFlight::rpy_from_quaternion(quat);
 			this->waitTime(this->wpStablizeTime_);
-			this->moveToOrientation(yaw, this->desiredAngularVel_);
+			this->requestExplorationTurn(yaw, this->waypointIdx_ < int(this->waypoints_.poses.size()));
 			cout << "[AutoFlight]: Finish rotation." << endl;
 			// cout << "[AutoFlight]: Press ENTER to move forward." << endl;
 			// std::cin.clear();
@@ -731,6 +760,10 @@ namespace AutoFlight{
 		if (this->trajectoryReady_){
 			ros::Time currTime = ros::Time::now();
 			double realTime = (currTime - this->trajStartTime_).toSec();
+            const double turnElapsed = realTime;
+            const bool turning = this->turnActive_;
+            if (turning) realTime = this->turnSchedule_.motionTime(realTime);
+
 			this->trajTime_ = this->bsplineTraj_->getLinearReparamTime(realTime);
 			double linearReparamFactor = this->bsplineTraj_->getLinearFactor();
 			Eigen::Vector3d pos = this->trajectory_.at(this->trajTime_);
@@ -738,6 +771,7 @@ namespace AutoFlight{
 			Eigen::Vector3d acc = this->trajectory_.getDerivative().getDerivative().at(this->trajTime_) * pow(linearReparamFactor, 2);
 			double endTime = this->trajectory_.getDuration()/linearReparamFactor;
 
+            if (turning && turnElapsed < this->turnSchedule_.delay) { vel.setZero(); acc.setZero(); }
 			double leftTime = endTime - realTime; 
 			tracking_controller::Target target;
 			if (leftTime <= 0.0){ // zero vel and zero acc if close to
@@ -750,11 +784,11 @@ namespace AutoFlight{
 				target.acceleration.x = 0.0;
 				target.acceleration.y = 0.0;
 				target.acceleration.z = 0.0;
-				target.yaw = AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation);
+				target.yaw = turning ? this->turnSchedule_.yaw(turnElapsed) : AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation);
 				this->updateTargetWithState(target);						
 			}
 			else{
-				target.yaw = AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation);
+				target.yaw = turning ? this->turnSchedule_.yaw(turnElapsed) : AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation);
 				target.position.x = pos(0);
 				target.position.y = pos(1);
 				target.position.z = pos(2);
@@ -766,6 +800,12 @@ namespace AutoFlight{
 				target.acceleration.z = acc(2);
 				this->updateTargetWithState(target);						
 			}
+            if (turning && turnElapsed >= this->turnSchedule_.duration &&
+                std::abs(TurnSchedule::wrap(AutoFlight::rpy_from_quaternion(this->odom_.pose.pose.orientation)-this->turnTarget_)) < 0.05) {
+                this->turnEvent("completed");
+                this->trajStartTime_ += ros::Duration(this->turnSchedule_.delay);
+                this->turnActive_ = false;
+            }
 		}
 	}
 

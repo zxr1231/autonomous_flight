@@ -137,6 +137,7 @@ add_library(
   include/${PROJECT_NAME}/simulation/dynamicNavigation.cpp
   include/${PROJECT_NAME}/simulation/dynamicInspection.cpp
   include/${PROJECT_NAME}/simulation/dynamicExploration.cpp
+  include/${PROJECT_NAME}/simulation/turnSync.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -180,6 +181,7 @@ target_link_libraries(dynamic_inspection_node ${catkin_LIBRARIES} ${PROJECT_NAME
 target_link_libraries(dynamic_exploration_node ${catkin_LIBRARIES} ${PROJECT_NAME})
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(turn_sync_test test/turn_sync_test.cpp)
   find_package(OpenCV REQUIRED COMPONENTS core)
   add_executable(return_home_checks test/return_home_checks.cpp)
   target_link_libraries(return_home_checks ${catkin_LIBRARIES} ${PROJECT_NAME})
