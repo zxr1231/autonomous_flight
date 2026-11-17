@@ -45,6 +45,11 @@ bool dynamicExploration::configureTurnSync(trajPlanner::bspline curve){
     auto velocity=curve.getDerivative();auto acceleration=velocity.getDerivative();
     if(flight<=0 || !std::isfinite(flight))throw std::runtime_error("invalid_curve");
     const double gap=(curve.at(0)-turnOrigin_).norm();
+    const auto& current=odom_.pose.pose.position;
+    const Eigen::Vector3d currentPosition(current.x,current.y,current.z);
+    ROS_INFO_STREAM("[TurnSyncDrift] requested_to_current="<<(currentPosition-turnOrigin_).norm()
+        <<" curve_to_current="<<(curve.at(0)-currentPosition).norm());
+
     const double startSpeed=velocity.at(0).norm()*factor;
     const double startAcceleration=acceleration.at(0).norm()*factor*factor;
     ROS_INFO_STREAM("[TurnSyncGeometry] {\"sim_time\":"<<ros::Time::now().toSec()

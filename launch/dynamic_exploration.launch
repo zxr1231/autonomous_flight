@@ -1,4 +1,6 @@
 <launch>
+	<arg name="exact_start" default="false" />
+	<param name="/bspline_traj/exact_start" value="$(arg exact_start)" type="bool" />
 	<arg name="turn_sync_mode" default="serial" />
 	<param name="/autonomous_flight/turn_sync_mode" value="$(arg turn_sync_mode)" type="str" />
 	<arg name="benchmark_seed" default="1" />
