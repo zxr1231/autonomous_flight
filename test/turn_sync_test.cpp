@@ -55,4 +55,15 @@ TEST(TurnSync, RestConstraintOnlyForInsertedHold){
  EXPECT_FALSE(AutoFlight::delayBoundaryValid(0,NAN,0));
  EXPECT_FALSE(AutoFlight::delayBoundaryValid(-1,0,0));
 }
+TEST(TurnSync, FailedCandidateDoesNotRetimeAcceptedTrajectory){
+ AutoFlight::CommittedTimeScale active;
+ ASSERT_TRUE(active.commit(.6));
+ double candidateScale=.0299117; // observed failed-planner scale; never committed
+ EXPECT_NEAR(active.time(8),4.8,1e-12);
+ candidateScale=.616332;
+ EXPECT_NEAR(active.time(9),5.4,1e-12);
+ EXPECT_FALSE(active.commit(NAN));EXPECT_FALSE(active.commit(0));
+ EXPECT_NEAR(active.value(),.6,1e-12);
+ ASSERT_TRUE(active.commit(candidateScale));EXPECT_NEAR(active.time(2),1.232664,1e-12);
+}
 int main(int argc,char** argv){testing::InitGoogleTest(&argc,argv);return RUN_ALL_TESTS();}

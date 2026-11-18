@@ -420,6 +420,10 @@ namespace AutoFlight{
                     }
 					this->trajStartTime_ = ros::Time::now();
 					this->trajTime_ = 0.0; // reset trajectory time
+                    if(!this->executionScale_.commit(this->bsplineTraj_->getLinearFactor())){
+                        this->turnActive_=false;this->trajectoryReady_=false;
+                        this->stop();this->replan_=true;return;
+                    }
 					this->trajectory_ = this->bsplineTraj_->getTrajectory();
 					executionSnapshotWritten =
 						this->expPlanner_->exportExecutionDiagnosticSnapshot(localSequence);
@@ -465,6 +469,7 @@ namespace AutoFlight{
 					else{
 						if (this->trajectoryReady_){
 							cout << "[AutoFlight]: Trajectory fail. Use trajectory from previous iteration." << endl;
+                            ROS_INFO_STREAM("[ExecutionClock] retained_scale="<<this->executionScale_.value()<<" rejected_candidate_scale="<<this->bsplineTraj_->getLinearFactor());
 							this->replan_ = false;
 						}
 						else{
@@ -594,7 +599,7 @@ namespace AutoFlight{
             bool prefixSafe = true;
             if (this->trajectoryReady_) {
                 for (double dt=0; dt<=.2; dt+=.02) {
-                    double u=std::min(this->trajectory_.getDuration(), this->trajTime_+dt*this->bsplineTraj_->getLinearFactor());
+                    double u=std::min(this->trajectory_.getDuration(), this->trajTime_+dt*this->executionScale_.value());
                     if (!this->expPlanner_->isPosValid(this->trajectory_.at(u))) prefixSafe=false;
                 }
             }
@@ -763,8 +768,8 @@ namespace AutoFlight{
             const bool turning = this->turnActive_;
             if (turning) realTime = this->turnSchedule_.motionTime(realTime);
 
-			this->trajTime_ = this->bsplineTraj_->getLinearReparamTime(realTime);
-			double linearReparamFactor = this->bsplineTraj_->getLinearFactor();
+			this->trajTime_ = this->executionScale_.time(realTime);
+			double linearReparamFactor = this->executionScale_.value();
 			Eigen::Vector3d pos = this->trajectory_.at(this->trajTime_);
 			Eigen::Vector3d vel = this->trajectory_.getDerivative().at(this->trajTime_) * linearReparamFactor;
 			Eigen::Vector3d acc = this->trajectory_.getDerivative().getDerivative().at(this->trajTime_) * pow(linearReparamFactor, 2);

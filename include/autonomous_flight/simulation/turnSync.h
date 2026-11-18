@@ -7,6 +7,15 @@
 #include <vector>
 #include <Eigen/Core>
 namespace AutoFlight {
+// Execution owns the accepted scale; candidate planner mutations must not reach it.
+class CommittedTimeScale {
+ double value_=1.;
+ public:
+ bool commit(double value){if(!std::isfinite(value)||value<=0)return false;value_=value;return true;}
+ double value()const{return value_;}
+ double time(double elapsed)const{return elapsed*value_;}
+};
+
 class FrozenTurnSafety {
   const std::vector<double>& occupancy_;
   const std::vector<bool>& inflated_;

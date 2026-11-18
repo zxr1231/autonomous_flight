@@ -65,6 +65,7 @@ namespace AutoFlight{
 		bool turnPending_ = false, turnActive_ = false;
 		double turnTarget_ = 0.0;
 		TurnSchedule turnSchedule_;
+        CommittedTimeScale executionScale_;
 		Eigen::Vector3d turnOrigin_ = Eigen::Vector3d::Zero();
 		void requestExplorationTurn(double yaw, bool hasNext);
 		bool configureTurnSync(trajPlanner::bspline curve);
