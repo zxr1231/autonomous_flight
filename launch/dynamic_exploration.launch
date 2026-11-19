@@ -1,4 +1,6 @@
 <launch>
+	<arg name="terminal_recovery" default="false" />
+	<param name="/autonomous_flight/terminal_recovery" value="$(arg terminal_recovery)" type="bool" />
 	<arg name="exact_start" default="false" />
 	<param name="/bspline_traj/exact_start" value="$(arg exact_start)" type="bool" />
 	<arg name="turn_sync_mode" default="serial" />

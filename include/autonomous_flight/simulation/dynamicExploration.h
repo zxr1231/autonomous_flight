@@ -62,6 +62,7 @@ namespace AutoFlight{
 		bool settlingHome_ = false;
 		bool handlingWaypoints_ = false;
 		std::string turnMode_ = "serial";
+		bool terminalRecoveryEnabled_ = false;
 		bool turnPending_ = false, turnActive_ = false;
 		double turnTarget_ = 0.0;
 		TurnSchedule turnSchedule_;

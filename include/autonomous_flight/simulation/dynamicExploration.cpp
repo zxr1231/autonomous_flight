@@ -47,6 +47,7 @@ namespace AutoFlight{
 
 	void dynamicExploration::initParam(){
         this->nh_.param<std::string>("autonomous_flight/turn_sync_mode", this->turnMode_, "serial");
+        this->nh_.param("autonomous_flight/terminal_recovery", this->terminalRecoveryEnabled_, false);
         if (this->turnMode_ != "serial" && this->turnMode_ != "parallel" && this->turnMode_ != "observation")
             throw std::runtime_error("invalid turn_sync_mode");
 
@@ -388,6 +389,44 @@ namespace AutoFlight{
 				nav_msgs::Path bsplineTrajMsgTemp;
 				const auto bsplineStart = Clock::now();
 				planSuccess = this->bsplineTraj_->makePlan(bsplineTrajMsgTemp);
+                if (planSuccess && this->terminalRecoveryEnabled_ && !this->returningHome_) {
+                    auto curve = this->bsplineTraj_->getTrajectory();
+                    const Eigen::Vector3d endpoint = curve.at(curve.getDuration());
+                    if (!this->expPlanner_->isPosValid(endpoint)) {
+                        const auto& p = pGoal.pose.position;
+                        const Eigen::Vector3d goal(p.x, p.y, p.z);
+                        const auto safety = this->expPlanner_->compareEndpointSafety(goal, endpoint);
+                        ROS_INFO_STREAM("[TerminalRecovery] map=" << safety.mapVersion
+                            << " goal_safe=" << safety.goalSafe << " endpoint_safe=" << safety.endpointSafe
+                            << " goal=" << goal.transpose() << " endpoint=" << endpoint.transpose()
+                            << " rejected_goal_sample=" << safety.goalFailure.transpose()
+                            << " rejected_endpoint_sample=" << safety.endpointFailure.transpose());
+                        if (!safety.endpointSafe) {
+                            if (safety.goalSafe && this->bsplineTraj_->retryExactEnd(goal, bsplineTrajMsgTemp)) {
+                                curve = this->bsplineTraj_->getTrajectory();
+                                const Eigen::Vector3d corrected = curve.at(curve.getDuration());
+                                const bool reachedGoal = (corrected - goal).norm() <= 1e-8;
+                                ROS_INFO_STREAM("[TerminalRecovery] exact_end error=" << (corrected - goal).norm());
+                                planSuccess = reachedGoal && this->expPlanner_->isPosValid(corrected);
+                            } else {
+                                planSuccess = false;
+                            }
+                            if (!planSuccess) {
+                                this->expPlanner_->avoidRejectedWaypoint(goal);
+                                ROS_WARN_STREAM("[TerminalRecovery] rejected waypoint " << goal.transpose());
+                                this->turnPending_ = false;
+                                this->turnActive_ = false;
+                                this->trajectoryReady_ = false;
+                                this->replan_ = false;
+                                this->stop();
+                                this->explorationReplan_ = true;
+                                return;
+                            }
+                            ROS_INFO("[TerminalRecovery] accepted exact-end retry");
+                        }
+                    }
+                }
+
 				bsplineMs = std::chrono::duration<double, std::milli>(Clock::now()-bsplineStart).count();
 				if (planSuccess && this->depthRecoveryEnabled() &&
 				    this->depthFaultObserved_ && !this->returningHome_){
@@ -720,6 +759,10 @@ namespace AutoFlight{
 
 		if (this->trajectoryReady_){
 			if (not this->expPlanner_->isPosValid(this->trajectory_.at(this->trajectory_.getDuration()))){
+                if (this->terminalRecoveryEnabled_ && !this->returningHome_) {
+                    const auto& p = this->goal_.pose.position;
+                    this->expPlanner_->avoidRejectedWaypoint(Eigen::Vector3d(p.x, p.y, p.z));
+                }
 				this->trajectoryReady_ = false;
 				this->replan_ = false;
 				this->stop();
