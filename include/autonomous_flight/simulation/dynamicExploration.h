@@ -66,6 +66,10 @@ namespace AutoFlight{
 		bool turnPending_ = false, turnActive_ = false;
 		double turnTarget_ = 0.0;
 		TurnSchedule turnSchedule_;
+        SerialTurnFallback serialTurnFallback_;
+        geometry_msgs::PoseStamped serialTurnHold_;
+        void startSerialTurnFallback();
+        void advanceSerialTurnFallback();
         CommittedTimeScale executionScale_;
 		Eigen::Vector3d turnOrigin_ = Eigen::Vector3d::Zero();
 		void requestExplorationTurn(double yaw, bool hasNext);

@@ -62,6 +62,36 @@ struct TurnSchedule {
   }
   double motionTime(double time)const{return std::max(0.,time-delay);}
 };
+// A serial fallback keeps the legacy constant-rate turn, without spinning the
+// callback queue while a timer callback is already executing.
+class SerialTurnFallback {
+  double start_ = 0.0;
+  double target_ = 0.0;
+  double delta_ = 0.0;
+  double rate_ = 0.0;
+  double startedAt_ = 0.0;
+  bool active_ = false;
+public:
+  void begin(double start, double target, double rate, double now) {
+    start_ = start;
+    target_ = target;
+    delta_ = TurnSchedule::wrap(target - start);
+    rate_ = rate;
+    startedAt_ = now;
+    active_ = true;
+  }
+  bool active() const { return active_; }
+  void cancel() { active_ = false; }
+
+  double yawAt(double now) const {
+    const double angle = std::min(std::abs(delta_), std::max(0.0, now - startedAt_) * rate_);
+    return TurnSchedule::wrap(start_ + std::copysign(angle, delta_));
+  }
+  bool reached(bool positionReached, double measuredYaw) const {
+    return active_ && positionReached && std::abs(TurnSchedule::wrap(target_ - measuredYaw)) < .1;
+  }
+};
+
 inline bool delayBoundaryValid(double delay,double initialSpeed,double initialAcceleration) {
   if(!std::isfinite(delay)||!std::isfinite(initialSpeed)||!std::isfinite(initialAcceleration)||delay<0)return false;
   // Only a newly inserted hold requires rest on both sides of its boundary.

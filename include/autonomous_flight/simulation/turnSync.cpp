@@ -31,6 +31,35 @@ void dynamicExploration::requestExplorationTurn(double yaw,bool hasNext){
   turnPending_=true;
   turnEvent("requested");
 }
+void dynamicExploration::startSerialTurnFallback(){
+  turnPending_ = false;
+  turnActive_ = false;
+  trajectoryReady_ = false;
+  replan_ = false;
+  serialTurnHold_.pose = odom_.pose.pose;
+  const double currentYaw = AutoFlight::rpy_from_quaternion(odom_.pose.pose.orientation);
+  serialTurnFallback_.begin(currentYaw, turnTarget_, desiredAngularVel_, ros::Time::now().toSec());
+  turnEvent("serial_fallback_started");
+  advanceSerialTurnFallback();
+}
+
+void dynamicExploration::advanceSerialTurnFallback(){
+  const double currentYaw = AutoFlight::rpy_from_quaternion(odom_.pose.pose.orientation);
+  if (serialTurnFallback_.reached(isReach(serialTurnHold_, false), currentYaw)) {
+    serialTurnFallback_.cancel();
+    turnEvent("serial_fallback_completed");
+    replan_ = true;
+    return;
+  }
+
+  tracking_controller::Target target;
+  target.position.x = serialTurnHold_.pose.position.x;
+  target.position.y = serialTurnHold_.pose.position.y;
+  target.position.z = serialTurnHold_.pose.position.z;
+  target.yaw = serialTurnFallback_.yawAt(ros::Time::now().toSec());
+  updateTargetWithState(target);
+}
+
 bool dynamicExploration::configureTurnSync(trajPlanner::bspline curve){
   using Clock=std::chrono::steady_clock;
   const auto begin=Clock::now(),deadline=begin+std::chrono::milliseconds(500);

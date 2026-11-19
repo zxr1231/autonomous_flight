@@ -451,10 +451,7 @@ namespace AutoFlight{
 				if (planSuccess){
 					this->bsplineTrajMsg_ = bsplineTrajMsgTemp;
                     if (this->turnPending_ && !this->configureTurnSync(this->bsplineTraj_->getTrajectory())) {
-                        this->turnPending_ = false; this->turnActive_ = false;
-                        this->trajectoryReady_ = false; this->handlingWaypoints_ = true;
-                        this->moveToOrientation(this->turnTarget_, this->desiredAngularVel_);
-                        this->handlingWaypoints_ = false; this->replan_ = true;
+                        this->startSerialTurnFallback();
                         return;
                     }
 					this->trajStartTime_ = ros::Time::now();
@@ -582,6 +579,10 @@ namespace AutoFlight{
 		{
 			std::lock_guard<std::mutex> lock(this->resultMutex_);
 			if (this->resultReady_) {
+                if (this->serialTurnFallback_.active()) {
+                    this->serialTurnFallback_.cancel();
+                    this->turnEvent("serial_fallback_cancelled");
+                }
 				this->resultReady_ = false;
 				this->replan_ = false;
 				this->trajectoryReady_ = false;
@@ -634,6 +635,16 @@ namespace AutoFlight{
 			3. fixed distance
 		*/
 
+        if (this->serialTurnFallback_.active()) {
+            if (this->returningHome_) {
+                this->serialTurnFallback_.cancel();
+                this->turnEvent("serial_fallback_cancelled");
+                this->stop();
+            } else {
+                this->advanceSerialTurnFallback();
+            }
+            return;
+        }
         if (this->turnActive_) {
             bool prefixSafe = true;
             if (this->trajectoryReady_) {

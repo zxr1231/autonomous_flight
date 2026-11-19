@@ -66,4 +66,24 @@ TEST(TurnSync, FailedCandidateDoesNotRetimeAcceptedTrajectory){
  EXPECT_NEAR(active.value(),.6,1e-12);
  ASSERT_TRUE(active.commit(candidateScale));EXPECT_NEAR(active.time(2),1.232664,1e-12);
 }
+TEST(TurnSync, SerialFallbackUsesShortestConstantRateAndMeasuredCompletion){
+    AutoFlight::SerialTurnFallback fallback;
+    fallback.begin(3.0, -3.0, .5, 10.0);
+    EXPECT_NEAR(fallback.yawAt(9.0), 3.0, 1e-12);
+    EXPECT_NEAR(AutoFlight::TurnSchedule::wrap(fallback.yawAt(10.4) - 3.0), .2, 1e-12);
+    EXPECT_NEAR(fallback.yawAt(12.0), -3.0, 1e-12);
+    EXPECT_FALSE(fallback.reached(false, -3.0));
+    EXPECT_FALSE(fallback.reached(true, 2.9));
+    EXPECT_TRUE(fallback.reached(true, -3.03));
+    fallback.cancel();
+    EXPECT_FALSE(fallback.active());
+    EXPECT_FALSE(fallback.reached(true, -3.0));
+}
+
+TEST(TurnSync, SerialFallbackCompletesAcrossYawWrap){
+    AutoFlight::SerialTurnFallback fallback;
+    fallback.begin(2.5, 3.13, .3, 1.0);
+    EXPECT_TRUE(fallback.reached(true, -3.14));
+    EXPECT_FALSE(fallback.reached(true, -2.9));
+}
 int main(int argc,char** argv){testing::InitGoogleTest(&argc,argv);return RUN_ALL_TESTS();}
