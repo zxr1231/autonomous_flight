@@ -1,4 +1,6 @@
 <launch>
+  <arg name="viewpoint_selector" default="original"/>
+  <param name="/autonomous_flight/viewpoint_selector" value="$(arg viewpoint_selector)" type="str"/>
 	<arg name="terminal_recovery" default="false" />
 	<param name="/autonomous_flight/terminal_recovery" value="$(arg terminal_recovery)" type="bool" />
 	<arg name="exact_start" default="false" />

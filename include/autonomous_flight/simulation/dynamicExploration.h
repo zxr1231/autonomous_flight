@@ -63,6 +63,8 @@ namespace AutoFlight{
 		bool handlingWaypoints_ = false;
 		std::string turnMode_ = "serial";
 		bool terminalRecoveryEnabled_ = false;
+        std::string viewpointSelector_;
+        ros::ServiceClient nextViewClient_;
 		bool turnPending_ = false, turnActive_ = false;
 		double turnTarget_ = 0.0;
 		TurnSchedule turnSchedule_;

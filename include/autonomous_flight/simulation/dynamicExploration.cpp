@@ -8,6 +8,7 @@
 #include <autonomous_flight/simulation/depthAngularObserver.h>
 #include <autonomous_flight/simulation/observationRecoverySelector.h>
 #include <chrono>
+#include <nav_msgs/GetPlan.h>
 #include <iomanip>
 #include <sstream>
 
@@ -46,6 +47,12 @@ namespace AutoFlight{
 	}
 
 	void dynamicExploration::initParam(){
+        nh_.param<std::string>("autonomous_flight/viewpoint_selector", viewpointSelector_, "original");
+        if (viewpointSelector_ == "fuel")
+            nextViewClient_ = nh_.serviceClient<nav_msgs::GetPlan>("/fuel_compare/next_view");
+        else if (viewpointSelector_ != "original" && viewpointSelector_ != "cerlab")
+            throw std::invalid_argument("unknown viewpoint selector");
+
         this->nh_.param<std::string>("autonomous_flight/turn_sync_mode", this->turnMode_, "serial");
         this->nh_.param("autonomous_flight/terminal_recovery", this->terminalRecoveryEnabled_, false);
         if (this->turnMode_ != "serial" && this->turnMode_ != "parallel" && this->turnMode_ != "observation")
@@ -1122,11 +1129,44 @@ namespace AutoFlight{
 					this->returnPathPub_.publish(plannedWaypoints);
 				}
 			} else {
-				const bool success = this->expPlanner_->makePlan();
+				const bool legacySuccess = this->expPlanner_->makePlan();
+                bool success = legacySuccess;
 				const globalPlanner::DEPPlanningMetrics metrics = this->expPlanner_->getLastPlanningMetrics();
 				plannedGlobalSequence = metrics.sequence;
 				nav_msgs::Path selectedPath = success ? this->expPlanner_->getBestPath() : nav_msgs::Path();
 				nav_msgs::Path rawPath = success ? this->expPlanner_->getBestRawPath() : nav_msgs::Path();
+                std::string decision = "original";
+                double selectorMs = metrics.totalMs;
+                double sharedRouteMs = 0.;
+                geometry_msgs::PoseStamped view;
+
+                if (viewpointSelector_ != "original") {
+                    bool hasView = false;
+                    if (viewpointSelector_ == "cerlab" && !selectedPath.poses.empty()) {
+                        view = selectedPath.poses.back();
+                        hasView = true;
+                    } else if (viewpointSelector_ == "fuel") {
+                        const auto viewStart = std::chrono::steady_clock::now();
+                        nav_msgs::GetPlan query;
+                        if (nextViewClient_.call(query) && query.response.plan.poses.size() == 1) {
+                            view = query.response.plan.poses.front();
+                            hasView = true;
+                        }
+                        selectorMs = std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-viewStart).count();
+                    }
+                    selectedPath = nav_msgs::Path();
+                    rawPath = nav_msgs::Path();
+                    const auto sharedRouteStart = std::chrono::steady_clock::now();
+                    success = hasView && expPlanner_->planViewPath(view, selectedPath);
+                    sharedRouteMs = std::chrono::duration<double,std::milli>(
+                        std::chrono::steady_clock::now()-sharedRouteStart).count();
+                    if (!success) selectedPath.poses.clear();
+                    decision = !hasView ? "no_view" : (success ? "routed" : "route_rejected");
+                    ROS_INFO_STREAM("[ViewSelection] selector=" << viewpointSelector_
+                      << " outcome=" << decision << " xyz=" << view.pose.position.x << ","
+                      << view.pose.position.y << "," << view.pose.position.z);
+                }
 				std_msgs::String event;
 				std::ostringstream json;
 				json << std::fixed << std::setprecision(3)
@@ -1134,7 +1174,13 @@ namespace AutoFlight{
 					 << ",\"sim_time\":" << now
 					 << ",\"map_version\":" << this->map_->getMapVersion()
 					 << ",\"depth_sequence\":" << this->depthSequence_.load()
-					 << ",\"success\":" << (metrics.success ? "true" : "false")
+					 << ",\"success\":" << (success ? "true" : "false")
+                     << ",\"viewpoint_selector\":\"" << viewpointSelector_ << "\""
+                     << ",\"viewpoint_result\":\"" << decision << "\""
+                     << ",\"viewpoint_xyz\":[" << view.pose.position.x << "," << view.pose.position.y
+                     << "," << view.pose.position.z << "]"
+                     << ",\"selector_ms\":" << selectorMs
+                     << ",\"shared_route_ms\":" << sharedRouteMs
 					 << ",\"recovery_used\":" << (metrics.recoveryUsed ? "true" : "false")
 					 << ",\"roadmap_nodes\":" << metrics.roadmapNodes
 					 << ",\"goal_candidates\":" << metrics.goalCandidates
@@ -1176,7 +1222,8 @@ namespace AutoFlight{
 					 << ",\"goal_selection_ms\":" << metrics.goalSelectionMs
 					 << ",\"candidate_search_ms\":" << metrics.candidateSearchMs
 					 << ",\"path_scoring_ms\":" << metrics.pathScoringMs
-					 << ",\"total_ms\":" << metrics.totalMs;
+					 << ",\"total_ms\":" << (metrics.totalMs + sharedRouteMs +
+                        (viewpointSelector_ == "fuel" ? selectorMs : 0.));
 				if (!metrics.routeControlJson.empty()) json << ",\"route_controls\":" << metrics.routeControlJson;
 				appendPathPoints(json, "selected_path_points", selectedPath);
 				appendPathPoints(json, "raw_path_points", rawPath);
@@ -1188,11 +1235,11 @@ namespace AutoFlight{
 				// produced, a fresh scan of every currently reachable roadmap node may
 				// still provide valid exhaustion evidence.
 				const bool shouldAssess = this->returnHomeEnabled_ &&
-					(!success || (this->expPlanner_->getBestPathGain() >= 0 &&
+					(!legacySuccess || (this->expPlanner_->getBestPathGain() >= 0 &&
 					 this->expPlanner_->getBestPathGain() <= this->completionGainThreshold_));
 				const bool exhausted = shouldAssess &&
 					this->expPlanner_->reachableGainExhausted(this->completionGainThreshold_, checkedNodes);
-				const bool assessmentValid = success || (shouldAssess && checkedNodes > 0);
+				const bool assessmentValid = legacySuccess || (shouldAssess && checkedNodes > 0);
 				const bool complete = this->completionGate_.observe(assessmentValid, exhausted, sensorFresh,
 					this->depthSequence_.load(), now);
 				if (complete) {
