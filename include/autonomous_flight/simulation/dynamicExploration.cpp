@@ -1140,32 +1140,44 @@ namespace AutoFlight{
                 double sharedRouteMs = 0.;
                 geometry_msgs::PoseStamped view;
 
+                size_t viewCandidates = 0;
+                size_t viewRejected = 0;
                 if (viewpointSelector_ != "original") {
-                    bool hasView = false;
+                    nav_msgs::Path candidates;
                     if (viewpointSelector_ == "cerlab" && !selectedPath.poses.empty()) {
-                        view = selectedPath.poses.back();
-                        hasView = true;
+                        candidates.poses.push_back(selectedPath.poses.back());
                     } else if (viewpointSelector_ == "fuel") {
                         const auto viewStart = std::chrono::steady_clock::now();
                         nav_msgs::GetPlan query;
-                        if (nextViewClient_.call(query) && query.response.plan.poses.size() == 1) {
-                            view = query.response.plan.poses.front();
-                            hasView = true;
-                        }
+                        if (nextViewClient_.call(query) && query.response.plan.header.frame_id == "map")
+                            candidates = std::move(query.response.plan);
                         selectorMs = std::chrono::duration<double,std::milli>(
                             std::chrono::steady_clock::now()-viewStart).count();
                     }
                     selectedPath = nav_msgs::Path();
                     rawPath = nav_msgs::Path();
                     const auto sharedRouteStart = std::chrono::steady_clock::now();
-                    success = hasView && expPlanner_->planViewPath(view, selectedPath);
+                    success = false;
+                    viewCandidates = std::min<size_t>(48, candidates.poses.size());
+                    if (viewCandidates > 0) view = candidates.poses.front();
+                    for (size_t index = 0; index < viewCandidates; ++index) {
+                        nav_msgs::Path candidatePath;
+                        if (expPlanner_->planViewPath(candidates.poses[index], candidatePath)) {
+                            selectedPath = std::move(candidatePath);
+                            view = candidates.poses[index];
+                            success = true;
+                            break;
+                        }
+                        ++viewRejected;
+                    }
                     sharedRouteMs = std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-sharedRouteStart).count();
-                    if (!success) selectedPath.poses.clear();
-                    decision = !hasView ? "no_view" : (success ? "routed" : "route_rejected");
+                    decision = viewCandidates == 0 ? "no_view" : (success ? "routed" : "route_rejected");
                     ROS_INFO_STREAM("[ViewSelection] selector=" << viewpointSelector_
-                      << " outcome=" << decision << " xyz=" << view.pose.position.x << ","
-                      << view.pose.position.y << "," << view.pose.position.z);
+                      << " outcome=" << decision << " candidates=" << viewCandidates
+                      << " rejected_before_selection=" << viewRejected
+                      << " xyz=" << view.pose.position.x << "," << view.pose.position.y
+                      << "," << view.pose.position.z);
                 }
 				std_msgs::String event;
 				std::ostringstream json;
@@ -1179,6 +1191,8 @@ namespace AutoFlight{
                      << ",\"viewpoint_result\":\"" << decision << "\""
                      << ",\"viewpoint_xyz\":[" << view.pose.position.x << "," << view.pose.position.y
                      << "," << view.pose.position.z << "]"
+                     << ",\"viewpoint_candidates\":" << viewCandidates
+                     << ",\"viewpoint_rejected\":" << viewRejected
                      << ",\"selector_ms\":" << selectorMs
                      << ",\"shared_route_ms\":" << sharedRouteMs
 					 << ",\"recovery_used\":" << (metrics.recoveryUsed ? "true" : "false")
